@@ -7,6 +7,7 @@ from groups.views import (
     GroupListCreateView,
     GroupMessageListCreateView,
     JoinGroupView,
+    PlayNjangiView,
     SocialFundListCreateView,
 )
 
@@ -15,6 +16,7 @@ urlpatterns = [
     path('groups/join/', JoinGroupView.as_view(), name='group-join'),
     path('groups/<uuid:pk>/', GroupDetailView.as_view(), name='group-detail'),
     path('groups/<uuid:pk>/picking-order/', AssignPickingOrderView.as_view(), name='group-picking-order'),
+    path('groups/<uuid:pk>/play/', PlayNjangiView.as_view(), name='group-play'),
     path('groups/<uuid:pk>/social-fund/', SocialFundListCreateView.as_view(), name='group-social-fund'),
     path(
         'groups/<uuid:pk>/social-fund/<uuid:fund_id>/contribute/',

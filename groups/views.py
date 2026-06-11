@@ -1,5 +1,6 @@
 import random
 
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -181,6 +182,166 @@ class ContributeSocialFundView(APIView):
         )
 
         return Response(SocialFundSerializer(fund).data, status=status.HTTP_201_CREATED)
+
+
+class PlayNjangiView(APIView):
+    def post(self, request, pk):
+        from contributions.models import Contribution
+        from notifications.models import Notification
+
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not group.schedule_generated:
+            return Response(
+                {'detail': 'Picking order has not been assigned yet.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        today = timezone.now().date()
+        already_played = Contribution.objects.filter(
+            group=group, user=request.user, status='completed', due_date=today,
+        ).exists()
+        if already_played:
+            return Response(
+                {'detail': 'You have already played for this cycle.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        amount = group.contribution_amount
+
+        if amount > request.user.wallet_balance:
+            return Response(
+                {'detail': 'Insufficient wallet balance.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        request.user.wallet_balance -= amount
+        request.user.save(update_fields=['wallet_balance'])
+
+        contribution = Contribution.objects.create(
+            group=group,
+            user=request.user,
+            amount=amount,
+            due_date=today,
+            status='pending',
+        )
+        contribution.mark_paid(payment_method='wallet')
+
+        record_transaction(
+            request.user, f'Contribution - {group.name}', amount, 'contribution', is_credit=False, group=group,
+        )
+
+        group.refresh_from_db()
+
+        cycle_completed = False
+        payout_data = None
+
+        if group.cycle_progress >= group.max_members:
+            cycle_completed = True
+            current_membership = group.memberships.select_related('user').filter(
+                is_current_beneficiary=True,
+            ).first()
+
+            payout_amount = group.contribution_amount * group.max_members
+
+            if current_membership:
+                recipient = current_membership.user
+                recipient.wallet_balance += payout_amount
+                recipient.save(update_fields=['wallet_balance'])
+
+                payout_transaction = record_transaction(
+                    recipient, f'Payout - {group.name}', payout_amount, 'payout', is_credit=True, group=group,
+                )
+
+                memberships = list(group.memberships.order_by('rotation_position'))
+                current_position = current_membership.rotation_position
+                next_membership = None
+                if current_position is not None:
+                    candidates = [
+                        m for m in memberships
+                        if m.rotation_position is not None and m.rotation_position > current_position
+                    ]
+                    if candidates:
+                        next_membership = min(candidates, key=lambda m: m.rotation_position)
+                    else:
+                        positioned = [m for m in memberships if m.rotation_position is not None]
+                        if positioned:
+                            next_membership = min(positioned, key=lambda m: m.rotation_position)
+
+                current_membership.is_current_beneficiary = False
+                current_membership.save(update_fields=['is_current_beneficiary'])
+
+                if next_membership:
+                    next_membership.is_current_beneficiary = True
+                    next_membership.save(update_fields=['is_current_beneficiary'])
+
+                group.cycle_progress = 0
+                group.fund_balance = 0
+                group.save(update_fields=['cycle_progress', 'fund_balance'])
+
+                payout_data = {
+                    'amount': str(payout_amount),
+                    'recipient': {
+                        'id': str(recipient.id),
+                        'name': recipient.full_name,
+                    },
+                    'transaction_hash': payout_transaction.hash or None,
+                }
+
+                Notification.objects.create(
+                    user=recipient,
+                    title=f'You received the payout for {group.name}',
+                    body=f'You have received a payout of {payout_amount} from {group.name}.',
+                    notification_type='upcoming_payout',
+                )
+
+                if next_membership:
+                    other_members = group.memberships.exclude(
+                        user_id=recipient.id,
+                    ).select_related('user')
+                    notifications = [
+                        Notification(
+                            user=m.user,
+                            title=f'{group.name} cycle completed',
+                            body=(
+                                f'The current cycle for {group.name} has been completed and '
+                                f'{recipient.full_name} received the payout. '
+                                f'{next_membership.user.full_name} picks next.'
+                            ),
+                            notification_type='group_announcement',
+                        )
+                        for m in other_members
+                    ]
+                    if notifications:
+                        Notification.objects.bulk_create(notifications)
+
+        group.refresh_from_db()
+
+        new_current = group.memberships.select_related('user').filter(
+            is_current_beneficiary=True,
+        ).first()
+        current_picker_data = None
+        if new_current:
+            current_picker_data = {
+                'id': str(new_current.user_id),
+                'name': new_current.user.full_name,
+                'rotation_position': new_current.rotation_position,
+            }
+
+        return Response(
+            {
+                'amount': str(amount),
+                'group_fund_balance': str(group.fund_balance),
+                'cycle_progress': group.cycle_progress,
+                'max_members': group.max_members,
+                'current_picker': current_picker_data,
+                'cycle_completed': cycle_completed,
+                'payout': payout_data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class GroupMessageListCreateView(generics.ListCreateAPIView):

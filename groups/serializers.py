@@ -36,6 +36,7 @@ class GroupSerializer(serializers.ModelSerializer):
     members = GroupMemberSerializer(source='memberships', many=True, read_only=True)
     current_beneficiary_id = serializers.SerializerMethodField()
     next_beneficiary_id = serializers.SerializerMethodField()
+    current_picker = serializers.SerializerMethodField()
     pickers_per_cycle = serializers.IntegerField(read_only=True)
     end_date = serializers.DateField(read_only=True)
 
@@ -45,7 +46,7 @@ class GroupSerializer(serializers.ModelSerializer):
             'id', 'name', 'member_count', 'max_members', 'contribution_amount',
             'frequency', 'fund_balance', 'cycle_progress', 'average_mri',
             'start_date', 'end_date', 'invitation_code', 'rules', 'members',
-            'current_beneficiary_id', 'next_beneficiary_id',
+            'current_beneficiary_id', 'next_beneficiary_id', 'current_picker',
             'target_amount', 'duration_months', 'picking_mode',
             'schedule_generated', 'pickers_per_cycle',
         ]
@@ -66,6 +67,18 @@ class GroupSerializer(serializers.ModelSerializer):
                 rotation_position__gt=current.rotation_position,
             ).order_by('rotation_position').first()
         return str(nxt.user_id) if nxt else None
+
+    def get_current_picker(self, obj):
+        if not obj.schedule_generated:
+            return None
+        m = obj.memberships.select_related('user').filter(is_current_beneficiary=True).first()
+        if not m:
+            return None
+        return {
+            'id': str(m.user_id),
+            'name': m.user.full_name,
+            'rotation_position': m.rotation_position,
+        }
 
 
 class CreateGroupSerializer(serializers.ModelSerializer):
