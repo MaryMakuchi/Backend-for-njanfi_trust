@@ -134,9 +134,26 @@ class AssignPickingOrderSerializer(serializers.Serializer):
     order = serializers.ListField(child=serializers.UUIDField(), required=False)
 
     def validate(self, attrs):
-        if attrs['mode'] == 'manual' and not attrs.get('order'):
-            raise serializers.ValidationError('Provide an "order" list of user IDs for manual mode.')
+        if not attrs.get('order'):
+            raise serializers.ValidationError(
+                'Provide an "order" list of member user IDs to assign the picking order. '
+                'For random mode, shuffle the member list client-side and submit the result here for confirmation.'
+            )
         return attrs
+
+
+class UpdateGroupSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NjangiGroup
+        fields = ['max_members']
+
+    def validate_max_members(self, value):
+        group = self.instance
+        if group is not None and value < group.member_count:
+            raise serializers.ValidationError(
+                f'max_members cannot be less than the current member count ({group.member_count}).'
+            )
+        return value
 
 
 class SocialFundContributionSerializer(serializers.ModelSerializer):

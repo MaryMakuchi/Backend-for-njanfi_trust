@@ -1,5 +1,3 @@
-import random
-
 from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.response import Response
@@ -16,6 +14,7 @@ from groups.serializers import (
     GroupSerializer,
     JoinGroupSerializer,
     SocialFundSerializer,
+    UpdateGroupSettingsSerializer,
 )
 
 
@@ -37,13 +36,32 @@ class GroupListCreateView(generics.ListCreateAPIView):
         return Response(GroupSerializer(group).data, status=status.HTTP_201_CREATED)
 
 
-class GroupDetailView(generics.RetrieveAPIView):
-    serializer_class = GroupSerializer
+class GroupDetailView(generics.RetrieveUpdateAPIView):
+    http_method_names = ['get', 'patch', 'head', 'options']
 
     def get_queryset(self):
         return NjangiGroup.objects.filter(
             memberships__user=self.request.user,
         ).prefetch_related('memberships__user')
+
+    def get_serializer_class(self):
+        if self.request.method == 'PATCH':
+            return UpdateGroupSettingsSerializer
+        return GroupSerializer
+
+    def patch(self, request, *args, **kwargs):
+        group = self.get_object()
+        membership = GroupMembership.objects.filter(group=group, user=request.user).first()
+        if not membership or membership.role != 'president':
+            return Response(
+                {'detail': 'Only the group president can edit group settings.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = UpdateGroupSettingsSerializer(group, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(GroupSerializer(group).data)
 
 
 class JoinGroupView(APIView):
@@ -91,39 +109,55 @@ class AssignPickingOrderView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if group.member_count < group.max_members:
+        if group.member_count < 2:
             return Response(
-                {'detail': 'The group must be full before assigning the picking order.'},
+                {'detail': 'At least two members are required before assigning the picking order.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         serializer = AssignPickingOrderSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         mode = serializer.validated_data['mode']
+        order = serializer.validated_data['order']
         memberships = list(group.memberships.all())
 
-        if mode == 'random':
-            order = [m.user_id for m in memberships]
-            random.shuffle(order)
-        else:
-            order = serializer.validated_data['order']
-            member_user_ids = {m.user_id for m in memberships}
-            if set(order) != member_user_ids:
-                return Response(
-                    {'order': ['The order must include every member exactly once.']},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        member_user_ids = {m.user_id for m in memberships}
+        order_set = set(order)
+        if len(order) != len(order_set):
+            return Response(
+                {'order': ['The order must not contain duplicate members.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not order_set.issubset(member_user_ids):
+            return Response(
+                {'order': ['The order may only include current members of the group.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         membership_by_user = {m.user_id: m for m in memberships}
+
+        # Assign positions for members included in the order.
         for position, user_id in enumerate(order, start=1):
             m = membership_by_user[user_id]
             m.rotation_position = position
             m.is_current_beneficiary = position == 1
             m.save(update_fields=['rotation_position', 'is_current_beneficiary'])
 
+        # Any current members not included in the order are left out of the
+        # active rotation until the picking order is re-run.
+        for user_id, m in membership_by_user.items():
+            if user_id not in order_set:
+                m.rotation_position = None
+                m.is_current_beneficiary = False
+                m.save(update_fields=['rotation_position', 'is_current_beneficiary'])
+
+        # Re-running the picking order changes the rotation, so reset cycle
+        # progress and the accumulated fund balance for the new rotation.
         group.picking_mode = mode
         group.schedule_generated = True
-        group.save(update_fields=['picking_mode', 'schedule_generated'])
+        group.cycle_progress = 0
+        group.fund_balance = 0
+        group.save(update_fields=['picking_mode', 'schedule_generated', 'cycle_progress', 'fund_balance'])
 
         return Response(GroupSerializer(group).data)
 
