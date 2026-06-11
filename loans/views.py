@@ -1,9 +1,10 @@
 from rest_framework import generics, status
+from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from loans.models import Loan
-from loans.serializers import LoanSerializer, RequestLoanSerializer
+from loans.serializers import LoanSerializer, RepayLoanSerializer, RequestLoanSerializer
 from loans.services import max_eligible_amount
 
 
@@ -27,3 +28,14 @@ class RequestLoanView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         loan = serializer.save()
         return Response(LoanSerializer(loan).data, status=status.HTTP_201_CREATED)
+
+
+class LoanRepayView(APIView):
+    def post(self, request, pk):
+        loan = get_object_or_404(Loan, pk=pk, user=request.user)
+        serializer = RepayLoanSerializer(
+            data=request.data, context={'request': request, 'loan': loan},
+        )
+        serializer.is_valid(raise_exception=True)
+        loan = serializer.save()
+        return Response(LoanSerializer(loan).data)
