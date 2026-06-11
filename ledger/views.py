@@ -12,4 +12,7 @@ class TransactionListView(generics.ListAPIView):
         status_filter = self.request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)
+        type_filter = self.request.query_params.get('type')
+        if type_filter:
+            qs = qs.filter(transaction_type__in=type_filter.split(','))
         return qs

@@ -19,6 +19,19 @@ def user_response(user, request):
     }
 
 
+def record_transaction(user, title, amount, transaction_type, is_credit):
+    from ledger.models import Transaction
+
+    return Transaction.objects.create(
+        user=user,
+        title=title,
+        amount=amount,
+        transaction_type=transaction_type,
+        status='completed',
+        is_credit=is_credit,
+    )
+
+
 def build_dashboard(user, request):
     from contributions.models import Contribution
     from groups.models import GroupMembership
@@ -55,6 +68,12 @@ def build_dashboard(user, request):
         if current_membership else 0
     )
 
+    social_fund_balance = sum(
+        fund.balance
+        for m in memberships
+        for fund in m.group.social_funds.filter(is_active=True)
+    )
+
     recent = Transaction.objects.filter(user=user).order_by('-created_at')[:5]
     recent_activity = TransactionSerializer(recent, many=True).data
 
@@ -66,8 +85,11 @@ def build_dashboard(user, request):
         'pending_payments': pending_payments,
         'total_savings': total_savings,
         'active_loans_amount': active_loans_amount,
-        'social_fund_balance': user.social_fund_balance,
+        'social_fund_balance': social_fund_balance,
         'current_payout': current_payout,
+        'wallet_balance': user.wallet_balance,
+        'savings_balance': user.savings_balance,
+        'total_balance': user.wallet_balance + user.savings_balance,
         'mri_score': user.mri_score,
         'mri_trend': user.mri_trend,
         'mri_breakdown': {

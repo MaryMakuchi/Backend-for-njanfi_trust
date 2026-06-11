@@ -44,6 +44,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     social_fund_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     wallet_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    savings_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
@@ -80,3 +81,29 @@ class User(AbstractBaseUser, PermissionsMixin):
         if any(float(s) > 0 for s in scores):
             self.mri_score = sum(float(s) for s in scores) / len(scores)
         self.save(update_fields=['mri_score'])
+
+
+class LinkedAccount(models.Model):
+    ACCOUNT_TYPE_CHOICES = [
+        ('mobile_money', 'Mobile Money'),
+        ('bank', 'Bank Account'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        'accounts.User',
+        on_delete=models.CASCADE,
+        related_name='linked_accounts',
+    )
+    account_type = models.CharField(max_length=20, choices=ACCOUNT_TYPE_CHOICES)
+    provider = models.CharField(max_length=50)
+    account_number = models.CharField(max_length=30)
+    account_name = models.CharField(max_length=150)
+    is_default = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-is_default', '-created_at']
+
+    def __str__(self):
+        return f'{self.provider} - {self.account_number}'

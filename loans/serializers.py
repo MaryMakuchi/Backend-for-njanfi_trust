@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from loans.models import Loan
+from loans.services import max_eligible_amount
 
 
 class LoanSerializer(serializers.ModelSerializer):
@@ -20,6 +21,15 @@ class RequestLoanSerializer(serializers.ModelSerializer):
     class Meta:
         model = Loan
         fields = ['amount', 'purpose', 'duration_months', 'group_id']
+
+    def validate_amount(self, value):
+        user = self.context['request'].user
+        max_amount = max_eligible_amount(user)
+        if value > max_amount:
+            raise serializers.ValidationError(
+                f'Requested amount exceeds your loan eligibility of {max_amount:,.0f} CFA.',
+            )
+        return value
 
     def create(self, validated_data):
         group_id = validated_data.pop('group_id', None)

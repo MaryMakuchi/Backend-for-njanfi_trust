@@ -1,6 +1,8 @@
+import math
 import secrets
 import uuid
 
+from dateutil.relativedelta import relativedelta
 from django.conf import settings
 from django.db import models
 
@@ -10,6 +12,11 @@ class NjangiGroup(models.Model):
         ('Weekly', 'Weekly'),
         ('Bi-weekly', 'Bi-weekly'),
         ('Monthly', 'Monthly'),
+    ]
+
+    PICKING_MODE_CHOICES = [
+        ('random', 'Random'),
+        ('manual', 'Manual'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -22,6 +29,10 @@ class NjangiGroup(models.Model):
     invitation_code = models.CharField(max_length=20, unique=True, blank=True)
     fund_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     cycle_progress = models.PositiveIntegerField(default=0)
+    target_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    duration_months = models.PositiveIntegerField(default=12)
+    picking_mode = models.CharField(max_length=10, choices=PICKING_MODE_CHOICES, default='random')
+    schedule_generated = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -51,6 +62,16 @@ class NjangiGroup(models.Model):
         scores = [float(s) for s in scores if s]
         return sum(scores) / len(scores) if scores else 0
 
+    @property
+    def pickers_per_cycle(self):
+        if not self.duration_months:
+            return 1
+        return max(1, math.ceil(self.max_members / self.duration_months))
+
+    @property
+    def end_date(self):
+        return self.start_date + relativedelta(months=self.duration_months)
+
 
 class GroupMembership(models.Model):
     ROLE_CHOICES = [
@@ -77,3 +98,51 @@ class GroupMembership(models.Model):
 
     def __str__(self):
         return f'{self.user.full_name} in {self.group.name}'
+
+    @property
+    def pick_cycle(self):
+        if not self.rotation_position:
+            return None
+        return math.ceil(self.rotation_position / self.group.pickers_per_cycle)
+
+
+class SocialFund(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    group = models.ForeignKey(NjangiGroup, on_delete=models.CASCADE, related_name='social_funds')
+    reason = models.TextField()
+    target_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    start_date = models.DateField()
+    end_date = models.DateField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_social_funds',
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Social Fund - {self.group.name}'
+
+
+class SocialFundContribution(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    social_fund = models.ForeignKey(SocialFund, on_delete=models.CASCADE, related_name='contributions')
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='social_fund_contributions',
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.user.full_name} -> {self.social_fund} ({self.amount})'

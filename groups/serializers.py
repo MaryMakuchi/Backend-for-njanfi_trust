@@ -1,6 +1,9 @@
+import math
+from decimal import Decimal
+
 from rest_framework import serializers
 
-from groups.models import GroupMembership, NjangiGroup
+from groups.models import GroupMembership, NjangiGroup, SocialFund, SocialFundContribution
 
 
 class GroupMemberSerializer(serializers.ModelSerializer):
@@ -8,10 +11,17 @@ class GroupMemberSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source='user.full_name')
     mri_score = serializers.DecimalField(source='user.mri_score', max_digits=4, decimal_places=1)
     role = serializers.CharField()
+    pick_cycle = serializers.SerializerMethodField()
 
     class Meta:
         model = GroupMembership
-        fields = ['id', 'name', 'role', 'mri_score', 'is_current_beneficiary', 'rotation_position']
+        fields = [
+            'id', 'name', 'role', 'mri_score', 'is_current_beneficiary',
+            'rotation_position', 'pick_cycle',
+        ]
+
+    def get_pick_cycle(self, obj):
+        return obj.pick_cycle
 
 
 class GroupSerializer(serializers.ModelSerializer):
@@ -20,14 +30,18 @@ class GroupSerializer(serializers.ModelSerializer):
     members = GroupMemberSerializer(source='memberships', many=True, read_only=True)
     current_beneficiary_id = serializers.SerializerMethodField()
     next_beneficiary_id = serializers.SerializerMethodField()
+    pickers_per_cycle = serializers.IntegerField(read_only=True)
+    end_date = serializers.DateField(read_only=True)
 
     class Meta:
         model = NjangiGroup
         fields = [
             'id', 'name', 'member_count', 'max_members', 'contribution_amount',
             'frequency', 'fund_balance', 'cycle_progress', 'average_mri',
-            'start_date', 'invitation_code', 'rules', 'members',
+            'start_date', 'end_date', 'invitation_code', 'rules', 'members',
             'current_beneficiary_id', 'next_beneficiary_id',
+            'target_amount', 'duration_months', 'picking_mode',
+            'schedule_generated', 'pickers_per_cycle',
         ]
 
     def get_average_mri(self, obj):
@@ -53,8 +67,26 @@ class CreateGroupSerializer(serializers.ModelSerializer):
         model = NjangiGroup
         fields = [
             'name', 'contribution_amount', 'frequency', 'max_members',
-            'start_date', 'rules',
+            'start_date', 'rules', 'target_amount', 'duration_months', 'picking_mode',
         ]
+
+    def validate(self, attrs):
+        target_amount = attrs.get('target_amount')
+        duration_months = attrs.get('duration_months') or 12
+        max_members = attrs['max_members']
+        contribution_amount = attrs['contribution_amount']
+
+        if target_amount:
+            pickers_per_cycle = max(1, math.ceil(max_members / duration_months))
+            pool_per_cycle = contribution_amount * max_members
+            required = target_amount * pickers_per_cycle
+            if pool_per_cycle < required:
+                raise serializers.ValidationError(
+                    'The contribution amount is too low to fund the target payout amount '
+                    f'for {pickers_per_cycle} picker(s) per cycle. '
+                    f'Each cycle collects {pool_per_cycle:,.0f} CFA but needs {required:,.0f} CFA.',
+                )
+        return attrs
 
     def create(self, validated_data):
         user = self.context['request'].user
@@ -76,3 +108,44 @@ class JoinGroupSerializer(serializers.Serializer):
         if not attrs.get('invitation_code') and not attrs.get('group_id'):
             raise serializers.ValidationError('Provide invitation_code or group_id.')
         return attrs
+
+
+class AssignPickingOrderSerializer(serializers.Serializer):
+    mode = serializers.ChoiceField(choices=['random', 'manual'])
+    order = serializers.ListField(child=serializers.UUIDField(), required=False)
+
+    def validate(self, attrs):
+        if attrs['mode'] == 'manual' and not attrs.get('order'):
+            raise serializers.ValidationError('Provide an "order" list of user IDs for manual mode.')
+        return attrs
+
+
+class SocialFundContributionSerializer(serializers.ModelSerializer):
+    user_name = serializers.CharField(source='user.full_name', read_only=True)
+
+    class Meta:
+        model = SocialFundContribution
+        fields = ['id', 'user_name', 'amount', 'created_at']
+
+
+class SocialFundSerializer(serializers.ModelSerializer):
+    contributions = SocialFundContributionSerializer(many=True, read_only=True)
+    group_name = serializers.CharField(source='group.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.full_name', read_only=True)
+
+    class Meta:
+        model = SocialFund
+        fields = [
+            'id', 'group_id', 'group_name', 'reason', 'target_amount', 'balance',
+            'start_date', 'end_date', 'created_by_name', 'is_active', 'contributions',
+        ]
+
+
+class CreateSocialFundSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SocialFund
+        fields = ['reason', 'target_amount', 'start_date', 'end_date']
+
+
+class ContributeSocialFundSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
