@@ -6,7 +6,10 @@ from rest_framework import serializers
 from groups.models import (
     GroupMembership,
     GroupMessage,
+    MembershipRequest,
     NjangiGroup,
+    SavingsContribution,
+    SavingsPeriod,
     SocialFund,
     SocialFundContribution,
 )
@@ -202,3 +205,44 @@ class GroupMessageSerializer(serializers.ModelSerializer):
             user=self.context['request'].user,
             **validated_data,
         )
+
+
+class SavingsPeriodSerializer(serializers.ModelSerializer):
+    is_closed = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = SavingsPeriod
+        fields = [
+            'id', 'interest_rate', 'interest_type', 'start_date', 'end_date',
+            'status', 'is_closed', 'created_at',
+        ]
+
+
+class StartSavingsPeriodSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SavingsPeriod
+        fields = ['interest_rate', 'interest_type', 'start_date', 'end_date']
+
+    def validate(self, attrs):
+        if attrs['end_date'] <= attrs['start_date']:
+            raise serializers.ValidationError('end_date must be after start_date.')
+        return attrs
+
+
+class SavingsDepositSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
+
+
+class MembershipRequestSerializer(serializers.ModelSerializer):
+    user = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MembershipRequest
+        fields = ['id', 'user', 'requested_at']
+
+    def get_user(self, obj):
+        return {'id': str(obj.user.id), 'name': obj.user.full_name}
+
+
+class RespondMembershipRequestSerializer(serializers.Serializer):
+    decision = serializers.ChoiceField(choices=['accept', 'reject'])

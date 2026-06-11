@@ -1,10 +1,12 @@
 import math
 import secrets
 import uuid
+from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 
 class NjangiGroup(models.Model):
@@ -164,3 +166,113 @@ class SocialFundContribution(models.Model):
 
     def __str__(self):
         return f'{self.user.full_name} -> {self.social_fund} ({self.amount})'
+
+
+class SavingsPeriod(models.Model):
+    INTEREST_TYPE_CHOICES = [
+        ('simple', 'Simple'),
+        ('compound', 'Compound'),
+    ]
+    STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('closed', 'Closed'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    group = models.ForeignKey(NjangiGroup, on_delete=models.CASCADE, related_name='savings_periods')
+    started_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='started_savings_periods',
+    )
+    interest_rate = models.DecimalField(max_digits=6, decimal_places=2)
+    interest_type = models.CharField(max_length=10, choices=INTEREST_TYPE_CHOICES, default='simple')
+    start_date = models.DateField()
+    end_date = models.DateField()
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='active')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Savings period for {self.group.name} ({self.start_date} - {self.end_date})'
+
+    @property
+    def is_closed(self):
+        return self.status == 'closed' or self.end_date < timezone.now().date()
+
+    @property
+    def total_months(self):
+        months = (self.end_date.year - self.start_date.year) * 12 + (self.end_date.month - self.start_date.month)
+        return max(1, months)
+
+
+class SavingsContribution(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    period = models.ForeignKey(SavingsPeriod, on_delete=models.CASCADE, related_name='contributions')
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='savings_contributions',
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.user.full_name} -> {self.period} ({self.amount})'
+
+    def interest_accrued(self):
+        return compute_interest(self, self.period)
+
+
+def compute_interest(contribution, period):
+    today = timezone.now().date()
+    end = min(today, period.end_date)
+    days_held = (end - contribution.created_at.date()).days
+    days_held = max(0, days_held)
+
+    period_total_days = (period.end_date - period.start_date).days
+    period_total_days = max(1, period_total_days)
+
+    rate = period.interest_rate
+    amount = contribution.amount
+
+    if period.interest_type == 'compound':
+        monthly_rate = float(rate / Decimal('100')) / float(period.total_months)
+        months_held = days_held / 30.0
+        growth = (1 + monthly_rate) ** months_held - 1
+        interest = amount * Decimal(str(growth))
+    else:
+        interest = amount * (rate / Decimal('100')) * (Decimal(days_held) / Decimal(period_total_days))
+
+    return interest.quantize(Decimal('0.01'))
+
+
+class MembershipRequest(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('accepted', 'Accepted'),
+        ('rejected', 'Rejected'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    group = models.ForeignKey(NjangiGroup, on_delete=models.CASCADE, related_name='membership_requests')
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='membership_requests',
+    )
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
+    requested_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-requested_at']
+
+    def __str__(self):
+        return f'{self.user.full_name} -> {self.group.name} ({self.status})'

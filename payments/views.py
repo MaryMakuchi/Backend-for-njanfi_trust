@@ -76,6 +76,8 @@ class MomoWebhookView(APIView):
             title='Wallet Top-up Received',
             body=f'Your Mobile Money payment of {amount:,.0f} CFA was confirmed and added to your wallet.',
             notification_type='contribution_confirmation',
+            target_type='transaction',
+            target_id=str(transaction.id),
         )
         return transaction
 
@@ -116,6 +118,8 @@ class MomoWebhookView(APIView):
             title='Contribution Confirmed',
             body=f'Your Mobile Money contribution of {amount:,.0f} CFA to {group.name} was confirmed.',
             notification_type='contribution_confirmation',
+            target_type='transaction',
+            target_id=str(transaction.id),
         )
 
         member_ids = GroupMembership.objects.filter(group=group).exclude(
@@ -127,6 +131,8 @@ class MomoWebhookView(APIView):
                 title='New Contribution',
                 body=f'{user.full_name} contributed {amount:,.0f} CFA to {group.name}.',
                 notification_type='group_announcement',
+                target_type='group',
+                target_id=str(group.id),
             )
             for member_id in member_ids
         ])

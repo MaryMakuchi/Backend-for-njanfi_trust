@@ -76,6 +76,8 @@ class RequestLoanView(generics.CreateAPIView):
                     f'for "{loan.purpose}" in {loan.group.name}. Your vote is needed.'
                 ),
                 notification_type='loan_approval',
+                target_type='loan',
+                target_id=str(loan.id),
             )
             for membership in other_members
         ]
@@ -138,6 +140,8 @@ class LoanVoteView(APIView):
                     f'has been approved by your group. The amount has been credited to your wallet.'
                 ),
                 notification_type='loan_approval',
+                target_type='loan',
+                target_id=str(loan.id),
             )
         elif reject_count >= majority:
             loan.status = 'rejected'
@@ -151,6 +155,8 @@ class LoanVoteView(APIView):
                     f'has been rejected by your group.'
                 ),
                 notification_type='loan_approval',
+                target_type='loan',
+                target_id=str(loan.id),
             )
 
         return Response({
@@ -195,7 +201,7 @@ class PendingLoanVotesView(APIView):
                 'your_vote': my_vote.decision if my_vote else None,
             })
 
-        return Response(results)
+        return Response({'results': results})
 
 
 class LoanRepayView(APIView):

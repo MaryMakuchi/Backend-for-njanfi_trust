@@ -2,13 +2,20 @@ from django.urls import path
 
 from groups.views import (
     AssignPickingOrderView,
+    CloseSavingsPeriodView,
     ContributeSocialFundView,
     GroupDetailView,
     GroupListCreateView,
     GroupMessageListCreateView,
+    GroupSavingsView,
     JoinGroupView,
+    MembershipRequestListView,
     PlayNjangiView,
+    RespondMembershipRequestView,
+    SavingsDepositView,
+    SavingsWithdrawView,
     SocialFundListCreateView,
+    StartSavingsPeriodView,
 )
 
 urlpatterns = [
@@ -24,4 +31,19 @@ urlpatterns = [
         name='group-social-fund-contribute',
     ),
     path('groups/<uuid:pk>/messages/', GroupMessageListCreateView.as_view(), name='group-messages'),
+    path('groups/<uuid:pk>/savings/start/', StartSavingsPeriodView.as_view(), name='group-savings-start'),
+    path('groups/<uuid:pk>/savings/', GroupSavingsView.as_view(), name='group-savings'),
+    path('groups/<uuid:pk>/savings/deposit/', SavingsDepositView.as_view(), name='group-savings-deposit'),
+    path('groups/<uuid:pk>/savings/withdraw/', SavingsWithdrawView.as_view(), name='group-savings-withdraw'),
+    path('groups/<uuid:pk>/savings/close/', CloseSavingsPeriodView.as_view(), name='group-savings-close'),
+    path(
+        'groups/<uuid:pk>/membership-requests/',
+        MembershipRequestListView.as_view(),
+        name='group-membership-requests',
+    ),
+    path(
+        'groups/<uuid:pk>/membership-requests/<uuid:req_id>/respond/',
+        RespondMembershipRequestView.as_view(),
+        name='group-membership-request-respond',
+    ),
 ]

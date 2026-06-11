@@ -24,6 +24,17 @@ class Notification(models.Model):
     notification_type = models.CharField(max_length=40, choices=TYPE_CHOICES)
     is_read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    target_type = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        choices=[
+            ('group', 'Group'),
+            ('loan', 'Loan'),
+            ('transaction', 'Transaction'),
+        ],
+    )
+    target_id = models.CharField(max_length=64, blank=True, default='')
 
     class Meta:
         ordering = ['-created_at']
