@@ -11,7 +11,7 @@ from ledger.models import Transaction
 from loans.models import Loan
 from notifications.models import Notification
 
-PASSWORD = 'Test@1234'
+PASSWORD = 'Test@123'
 
 
 class Command(BaseCommand):
@@ -22,7 +22,7 @@ class Command(BaseCommand):
         aisha, _ = User.objects.update_or_create(
             email='aisha.president@njangi.test',
             defaults={
-                'phone': '+237670000011',
+                'phone': '+237671111111',
                 'full_name': 'Aisha Mballa',
                 'badge': 'Group President',
                 'is_kyc_verified': True,
@@ -46,7 +46,7 @@ class Command(BaseCommand):
         brian, _ = User.objects.update_or_create(
             email='brian.treasurer@njangi.test',
             defaults={
-                'phone': '+237670000012',
+                'phone': '+237672222222',
                 'full_name': 'Brian Tabi',
                 'badge': 'Treasurer',
                 'is_kyc_verified': True,
@@ -70,7 +70,7 @@ class Command(BaseCommand):
         carine, _ = User.objects.update_or_create(
             email='carine.member@njangi.test',
             defaults={
-                'phone': '+237670000013',
+                'phone': '+237673333333',
                 'full_name': 'Carine Fonki',
                 'badge': 'Active Member',
                 'is_kyc_verified': True,
@@ -94,7 +94,7 @@ class Command(BaseCommand):
         david, _ = User.objects.update_or_create(
             email='david.newuser@njangi.test',
             defaults={
-                'phone': '+237670000014',
+                'phone': '+237674444444',
                 'full_name': 'David Eyong',
                 'badge': '',
                 'is_kyc_verified': False,
