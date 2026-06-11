@@ -18,6 +18,7 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'full_name', 'email', 'phone', 'profile_image_url',
             'mri_score', 'is_kyc_verified', 'groups_count', 'years_active',
             'global_rank', 'badge', 'wallet_balance', 'savings_balance',
+            'celo_address',
         ]
 
     def get_profile_image_url(self, obj):

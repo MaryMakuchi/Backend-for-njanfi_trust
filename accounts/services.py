@@ -19,17 +19,22 @@ def user_response(user, request):
     }
 
 
-def record_transaction(user, title, amount, transaction_type, is_credit):
+def record_transaction(user, title, amount, transaction_type, is_credit, group=None):
+    from blockchain.services import record_on_chain
     from ledger.models import Transaction
 
-    return Transaction.objects.create(
+    transaction = Transaction.objects.create(
         user=user,
+        group=group,
         title=title,
         amount=amount,
         transaction_type=transaction_type,
         status='completed',
         is_credit=is_credit,
     )
+    record_on_chain(transaction)
+    transaction.save(update_fields=['hash', 'status'])
+    return transaction
 
 
 def build_dashboard(user, request):

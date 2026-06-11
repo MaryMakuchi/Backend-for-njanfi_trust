@@ -28,6 +28,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     full_name = models.CharField(max_length=150)
     profile_image = models.ImageField(upload_to='profiles/', blank=True, null=True)
     firebase_uid = models.CharField(max_length=128, blank=True, null=True, unique=True)
+    celo_address = models.CharField(max_length=42, blank=True, default='')
 
     mri_score = models.DecimalField(max_digits=4, decimal_places=1, default=0)
     mri_trend = models.DecimalField(max_digits=4, decimal_places=1, default=0)

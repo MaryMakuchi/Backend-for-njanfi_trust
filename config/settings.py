@@ -26,6 +26,8 @@ INSTALLED_APPS = [
     'loans',
     'ledger',
     'notifications',
+    'blockchain',
+    'payments',
 ]
 
 MIDDLEWARE = [
@@ -136,3 +138,24 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'Backend API for the Njangi Trust mobile application',
     'VERSION': '1.0.0',
 }
+
+# --- Celo blockchain integration ---
+# Disabled by default: transactions get a simulated SHA-256 hash until a
+# NjangiLedger contract has been deployed and funded (see
+# blockchain_contracts/README.md). Set BLOCKCHAIN_ENABLED=True and the
+# variables below once that's done.
+BLOCKCHAIN_ENABLED = config('BLOCKCHAIN_ENABLED', default=False, cast=bool)
+CELO_NETWORK = config('CELO_NETWORK', default='alfajores')
+CELO_RPC_URL = config('CELO_RPC_URL', default='https://alfajores-forno.celo-testnet.org')
+CELO_PRIVATE_KEY = config('CELO_PRIVATE_KEY', default='')
+CELO_LEDGER_CONTRACT_ADDRESS = config('CELO_LEDGER_CONTRACT_ADDRESS', default='')
+CELO_EXPLORER_BASE_URL = config(
+    'CELO_EXPLORER_BASE_URL',
+    default='https://alfajores.celoscan.io/tx/',
+)
+
+# --- MTN MoMo webhook ---
+# Shared secret the payment provider must send back in the
+# `X-Momo-Signature` header. Used while the real MTN MoMo Collections API
+# integration is stubbed out.
+MOMO_WEBHOOK_SECRET = config('MOMO_WEBHOOK_SECRET', default='dev-momo-secret')

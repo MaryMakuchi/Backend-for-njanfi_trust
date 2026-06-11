@@ -1,9 +1,9 @@
-import hashlib
 from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from blockchain.services import record_on_chain
 from contributions.models import Contribution
 from contributions.serializers import ContributionSerializer, PayContributionSerializer
 from groups.models import NjangiGroup
@@ -38,19 +38,17 @@ class PayContributionView(APIView):
         group.cycle_progress = min(group.cycle_progress + 1, group.max_members)
         group.save(update_fields=['fund_balance', 'cycle_progress'])
 
-        tx_hash = hashlib.sha256(
-            f'{contribution.id}{data["amount"]}{timezone.now().isoformat()}'.encode(),
-        ).hexdigest()
         transaction = Transaction.objects.create(
             user=request.user,
             group=group,
             title=f'Contribution - {group.name}',
             amount=data['amount'],
             transaction_type='contribution',
-            status='verified',
-            hash=tx_hash,
+            status='completed',
             is_credit=False,
         )
+        record_on_chain(transaction)
+        transaction.save(update_fields=['hash', 'status'])
 
         user = request.user
         user.mri_contribution_consistency = min(float(user.mri_contribution_consistency) + 0.2, 10)
