@@ -3,8 +3,7 @@ from datetime import timedelta
 from django.utils import timezone
 from rest_framework import serializers
 
-from ledger.models import Transaction
-from loans.models import Loan
+from loans.models import Loan, LoanVote
 from loans.services import max_eligible_amount
 
 
@@ -22,7 +21,7 @@ class LoanSerializer(serializers.ModelSerializer):
 
 
 class RequestLoanSerializer(serializers.ModelSerializer):
-    group_id = serializers.UUIDField(required=False, allow_null=True, write_only=True)
+    group_id = serializers.UUIDField(required=True, write_only=True)
 
     class Meta:
         model = Loan
@@ -37,42 +36,37 @@ class RequestLoanSerializer(serializers.ModelSerializer):
             )
         return value
 
-    def create(self, validated_data):
-        group_id = validated_data.pop('group_id', None)
-        user = self.context['request'].user
-        group = None
-        if group_id:
-            from groups.models import NjangiGroup
-            group = NjangiGroup.objects.filter(id=group_id).first()
+    def validate_group_id(self, value):
+        from groups.models import NjangiGroup
+        group = NjangiGroup.objects.filter(id=value).first()
+        if not group:
+            raise serializers.ValidationError('A group is required to request a loan.')
+        return value
 
-        amount = validated_data['amount']
+    def create(self, validated_data):
+        from groups.models import NjangiGroup
+
+        group_id = validated_data.pop('group_id')
+        user = self.context['request'].user
+        group = NjangiGroup.objects.get(id=group_id)
+
         duration_months = validated_data['duration_months']
         today = timezone.now().date()
 
         loan = Loan.objects.create(
             user=user,
             group=group,
-            status='active',
-            remaining_balance=amount,
-            approved_date=today,
+            status='pending',
+            remaining_balance=0,
             due_date=today + timedelta(days=30 * duration_months),
             **validated_data,
         )
 
-        user.wallet_balance = user.wallet_balance + amount
-        user.save(update_fields=['wallet_balance'])
-
-        Transaction.objects.create(
-            user=user,
-            group=group,
-            title=f'Loan Disbursement - {group.name}' if group else 'Loan Disbursement',
-            amount=amount,
-            transaction_type='loan_disbursement',
-            status='completed',
-            is_credit=True,
-        )
-
         return loan
+
+
+class VoteLoanSerializer(serializers.Serializer):
+    decision = serializers.ChoiceField(choices=LoanVote.DECISION_CHOICES)
 
 
 class RepayLoanSerializer(serializers.Serializer):
@@ -88,6 +82,8 @@ class RepayLoanSerializer(serializers.Serializer):
         return attrs
 
     def save(self, **kwargs):
+        from ledger.models import Transaction
+
         loan = self.context['loan']
         user = self.context['request'].user
         amount = min(self.validated_data['amount'], loan.remaining_balance)

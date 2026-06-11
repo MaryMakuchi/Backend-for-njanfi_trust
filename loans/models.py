@@ -36,3 +36,23 @@ class Loan(models.Model):
 
     def __str__(self):
         return f'{self.user.full_name} - {self.amount} ({self.status})'
+
+
+class LoanVote(models.Model):
+    DECISION_CHOICES = [
+        ('approve', 'Approve'),
+        ('reject', 'Reject'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    loan = models.ForeignKey(Loan, on_delete=models.CASCADE, related_name='votes')
+    voter = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='loan_votes')
+    decision = models.CharField(max_length=10, choices=DECISION_CHOICES)
+    voted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('loan', 'voter')
+        ordering = ['-voted_at']
+
+    def __str__(self):
+        return f'{self.voter.full_name} -> {self.loan_id} ({self.decision})'
