@@ -3,7 +3,13 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from groups.models import GroupMembership, NjangiGroup, SocialFund, SocialFundContribution
+from groups.models import (
+    GroupMembership,
+    GroupMessage,
+    NjangiGroup,
+    SocialFund,
+    SocialFundContribution,
+)
 
 
 class GroupMemberSerializer(serializers.ModelSerializer):
@@ -149,3 +155,20 @@ class CreateSocialFundSerializer(serializers.ModelSerializer):
 
 class ContributeSocialFundSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
+
+
+class GroupMessageSerializer(serializers.ModelSerializer):
+    user_id = serializers.UUIDField(source='user.id', read_only=True)
+    user_name = serializers.CharField(source='user.full_name', read_only=True)
+
+    class Meta:
+        model = GroupMessage
+        fields = ['id', 'group_id', 'user_id', 'user_name', 'message', 'created_at']
+        read_only_fields = ['id', 'group_id', 'user_id', 'user_name', 'created_at']
+
+    def create(self, validated_data):
+        return GroupMessage.objects.create(
+            group=self.context['group'],
+            user=self.context['request'].user,
+            **validated_data,
+        )

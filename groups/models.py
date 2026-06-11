@@ -130,6 +130,24 @@ class SocialFund(models.Model):
         return f'Social Fund - {self.group.name}'
 
 
+class GroupMessage(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    group = models.ForeignKey(NjangiGroup, on_delete=models.CASCADE, related_name='messages')
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='group_messages',
+    )
+    message = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f'{self.user.full_name} in {self.group.name}: {self.message[:30]}'
+
+
 class SocialFundContribution(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     social_fund = models.ForeignKey(SocialFund, on_delete=models.CASCADE, related_name='contributions')

@@ -5,6 +5,7 @@ from groups.views import (
     ContributeSocialFundView,
     GroupDetailView,
     GroupListCreateView,
+    GroupMessageListCreateView,
     JoinGroupView,
     SocialFundListCreateView,
 )
@@ -20,4 +21,5 @@ urlpatterns = [
         ContributeSocialFundView.as_view(),
         name='group-social-fund-contribute',
     ),
+    path('groups/<uuid:pk>/messages/', GroupMessageListCreateView.as_view(), name='group-messages'),
 ]

@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from accounts.models import LinkedAccount, User
 from contributions.models import Contribution
-from groups.models import GroupMembership, NjangiGroup, SocialFund, SocialFundContribution
+from groups.models import GroupMembership, GroupMessage, NjangiGroup, SocialFund, SocialFundContribution
 from ledger.models import Transaction
 from loans.models import Loan
 from notifications.models import Notification
@@ -329,6 +329,26 @@ class Command(BaseCommand):
                  notification_type='group_announcement'),
             dict(title='Payment Reminder', body='Your first contribution of 50,000 CFA is due soon.',
                  notification_type='payment_reminder'),
+        ])
+
+        GroupMessage.objects.filter(group=group).delete()
+        now = timezone.now()
+        GroupMessage.objects.bulk_create([
+            GroupMessage(group=group, user=aisha,
+                          message='Welcome everyone! Our group is now full, let\'s assign the picking order.',
+                          created_at=now - timedelta(days=3, hours=2)),
+            GroupMessage(group=group, user=brian,
+                          message='Sounds good. I\'ll confirm everyone\'s contributions are up to date.',
+                          created_at=now - timedelta(days=3, hours=1)),
+            GroupMessage(group=group, user=carine,
+                          message='Thanks for approving my loan, really appreciate it!',
+                          created_at=now - timedelta(days=2, hours=5)),
+            GroupMessage(group=group, user=david,
+                          message='Hi all, excited to be part of QA TEST GROUP!',
+                          created_at=now - timedelta(days=1, hours=4)),
+            GroupMessage(group=group, user=aisha,
+                          message='Welcome David! Don\'t forget to complete your KYC.',
+                          created_at=now - timedelta(days=1, hours=3)),
         ])
 
         self.stdout.write(self.style.SUCCESS('Test users seeded successfully:'))

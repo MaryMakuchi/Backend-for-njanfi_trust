@@ -5,12 +5,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.services import record_transaction
-from groups.models import GroupMembership, NjangiGroup, SocialFund, SocialFundContribution
+from groups.models import GroupMembership, GroupMessage, NjangiGroup, SocialFund, SocialFundContribution
 from groups.serializers import (
     AssignPickingOrderSerializer,
     ContributeSocialFundSerializer,
     CreateGroupSerializer,
     CreateSocialFundSerializer,
+    GroupMessageSerializer,
     GroupSerializer,
     JoinGroupSerializer,
     SocialFundSerializer,
@@ -180,3 +181,27 @@ class ContributeSocialFundView(APIView):
         )
 
         return Response(SocialFundSerializer(fund).data, status=status.HTTP_201_CREATED)
+
+
+class GroupMessageListCreateView(generics.ListCreateAPIView):
+    serializer_class = GroupMessageSerializer
+
+    def get_group(self):
+        return NjangiGroup.objects.filter(
+            id=self.kwargs['pk'], memberships__user=self.request.user,
+        ).first()
+
+    def get_queryset(self):
+        group = self.get_group()
+        if not group:
+            return GroupMessage.objects.none()
+        return GroupMessage.objects.filter(group=group).select_related('user')
+
+    def create(self, request, *args, **kwargs):
+        group = self.get_group()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = self.get_serializer(data=request.data, context={'request': request, 'group': group})
+        serializer.is_valid(raise_exception=True)
+        message = serializer.save()
+        return Response(GroupMessageSerializer(message).data, status=status.HTTP_201_CREATED)
