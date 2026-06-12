@@ -1,7 +1,48 @@
+from decimal import Decimal
+
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from accounts.models import User
+from accounts.models import MriEvent, User
 from accounts.serializers import UserSerializer
+
+# MRI score floor (scores live on a 0-10 Decimal scale).
+MRI_FLOOR = Decimal('0')
+
+
+def apply_mri_demerit(user, points, reason, description, reference_id=''):
+    """Decrement a user's stored mri_score, record an MriEvent and notify them.
+
+    ``points`` is the magnitude of the penalty (a positive Decimal/number on the
+    0-10 scale). The new score is clamped to ``MRI_FLOOR``. Returns the new score.
+    """
+    points = Decimal(str(points))
+    new_score = user.mri_score - points
+    if new_score < MRI_FLOOR:
+        new_score = MRI_FLOOR
+    user.mri_score = new_score
+    user.save(update_fields=['mri_score'])
+
+    MriEvent.objects.create(
+        user=user,
+        delta=-points,
+        reason=reason,
+        description=description,
+        reference_id=reference_id,
+    )
+
+    from notifications.models import Notification
+
+    Notification.objects.create(
+        user=user,
+        title='MRI score updated',
+        body=(
+            f'You lost {points} MRI points: {description}. '
+            f'Your score is now {new_score}.'
+        ),
+        notification_type='mri_update',
+    )
+
+    return new_score
 
 
 def issue_tokens(user):

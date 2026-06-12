@@ -3,7 +3,7 @@ from decimal import Decimal
 from django.contrib.auth import authenticate
 from rest_framework import serializers
 
-from accounts.models import LinkedAccount, User
+from accounts.models import LinkedAccount, MriEvent, User
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -117,6 +117,12 @@ class DashboardSerializer(serializers.Serializer):
     mri_trend = serializers.DecimalField(max_digits=4, decimal_places=1)
     mri_breakdown = MriBreakdownSerializer()
     recent_activity = serializers.ListField()
+
+
+class MriEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MriEvent
+        fields = ['delta', 'reason', 'description', 'created_at']
 
 
 class LinkedAccountSerializer(serializers.ModelSerializer):

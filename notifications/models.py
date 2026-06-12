@@ -11,6 +11,7 @@ class Notification(models.Model):
         ('contribution_confirmation', 'Contribution Confirmation'),
         ('upcoming_payout', 'Upcoming Payout'),
         ('group_announcement', 'Group Announcement'),
+        ('mri_update', 'MRI Update'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

@@ -84,6 +84,39 @@ class User(AbstractBaseUser, PermissionsMixin):
         self.save(update_fields=['mri_score'])
 
 
+class MriEvent(models.Model):
+    """Audit trail of MRI score changes (demerits, and future merits)."""
+
+    REASON_CHOICES = [
+        ('late_njangi', 'Late Njangi'),
+        ('missed_contribution', 'Missed Contribution'),
+        ('loan_default', 'Loan Default'),
+        ('membership_rejected', 'Membership Rejected'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        'accounts.User',
+        on_delete=models.CASCADE,
+        related_name='mri_events',
+    )
+    # Negative for demerits, positive for future merits. Stored as Decimal to
+    # match the 0-10 mri_score scale (e.g. -0.5).
+    delta = models.DecimalField(max_digits=4, decimal_places=1)
+    reason = models.CharField(max_length=40, choices=REASON_CHOICES)
+    description = models.TextField()
+    # Stable reference (e.g. contribution/loan id) used for idempotency so the
+    # same underlying condition is never penalised twice.
+    reference_id = models.CharField(max_length=64, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.user_id} {self.reason} {self.delta}'
+
+
 class LinkedAccount(models.Model):
     ACCOUNT_TYPE_CHOICES = [
         ('mobile_money', 'Mobile Money'),

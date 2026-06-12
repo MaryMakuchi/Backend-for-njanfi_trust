@@ -11,6 +11,7 @@ from accounts.serializers import (
     ForgotPasswordSerializer,
     LinkedAccountSerializer,
     LoginSerializer,
+    MriEventSerializer,
     PhoneLoginSerializer,
     RegisterSerializer,
     UserSerializer,
@@ -99,6 +100,16 @@ class DashboardView(APIView):
         data = build_dashboard(request.user, request)
         serializer = DashboardSerializer(data)
         return Response(serializer.data)
+
+
+class MriHistoryView(APIView):
+    def get(self, request):
+        user = request.user
+        events = user.mri_events.all()
+        return Response({
+            'mri_score': user.mri_score,
+            'events': MriEventSerializer(events, many=True).data,
+        })
 
 
 class JwtRefreshView(TokenRefreshView):
