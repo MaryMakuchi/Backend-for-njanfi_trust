@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from dateutil.relativedelta import relativedelta
 from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.response import Response
@@ -23,10 +24,12 @@ from groups.serializers import (
     CreateGroupSerializer,
     CreateSocialFundSerializer,
     GroupMessageSerializer,
+    GroupPreviewSerializer,
     GroupSearchSerializer,
     GroupSerializer,
     JoinGroupSerializer,
     MembershipRequestSerializer,
+    PlayNjangiSerializer,
     RespondMembershipRequestSerializer,
     SavingsDepositSerializer,
     SavingsPeriodSerializer,
@@ -35,6 +38,11 @@ from groups.serializers import (
     UpdateGroupSettingsSerializer,
 )
 from notifications.models import Notification
+
+
+def _source_label(source):
+    """Human-readable label for a payment source used in transaction titles."""
+    return {'momo': 'MoMo', 'bank': 'Bank', 'wallet': 'Wallet'}.get(source, source.capitalize())
 
 
 class GroupListCreateView(generics.ListCreateAPIView):
@@ -302,16 +310,24 @@ class PlayNjangiView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        play_serializer = PlayNjangiSerializer(data=request.data or {})
+        play_serializer.is_valid(raise_exception=True)
+        source = play_serializer.validated_data.get('source', 'wallet')
+
         amount = group.contribution_amount
 
-        if amount > request.user.wallet_balance:
-            return Response(
-                {'detail': 'Insufficient wallet balance.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        request.user.wallet_balance -= amount
-        request.user.save(update_fields=['wallet_balance'])
+        if source == 'wallet':
+            if amount > request.user.wallet_balance:
+                return Response(
+                    {'detail': 'Insufficient wallet balance.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            request.user.wallet_balance -= amount
+            request.user.save(update_fields=['wallet_balance'])
+            title = f'Contribution - {group.name}'
+        else:
+            # momo/bank: external funds, do NOT debit wallet. Note source.
+            title = f'Contribution ({_source_label(source)}) - {group.name}'
 
         contribution = Contribution.objects.create(
             group=group,
@@ -320,10 +336,10 @@ class PlayNjangiView(APIView):
             due_date=today,
             status='pending',
         )
-        contribution.mark_paid(payment_method='wallet')
+        contribution.mark_paid(payment_method=source)
 
         record_transaction(
-            request.user, f'Contribution - {group.name}', amount, 'contribution', is_credit=False, group=group,
+            request.user, title, amount, 'contribution', is_credit=False, group=group,
         )
 
         group.refresh_from_db()
@@ -567,17 +583,23 @@ class SavingsDepositView(APIView):
         serializer = SavingsDepositSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         amount = serializer.validated_data['amount']
+        source = serializer.validated_data.get('source', 'wallet')
 
-        if amount > request.user.wallet_balance:
-            return Response({'detail': 'Insufficient wallet balance.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        request.user.wallet_balance -= amount
-        request.user.save(update_fields=['wallet_balance'])
+        if source == 'wallet':
+            if amount > request.user.wallet_balance:
+                return Response({'detail': 'Insufficient wallet balance.'}, status=status.HTTP_400_BAD_REQUEST)
+            request.user.wallet_balance -= amount
+            request.user.save(update_fields=['wallet_balance'])
+            title = f'Savings deposit - {group.name}'
+        else:
+            # momo/bank: funds come from an external account; do NOT debit the
+            # wallet. Record the contribution and note the source in the title.
+            title = f'Savings deposit ({_source_label(source)}) - {group.name}'
 
         SavingsContribution.objects.create(period=period, user=request.user, amount=amount)
         record_transaction(
             request.user,
-            title=f'Savings deposit - {group.name}',
+            title=title,
             amount=amount,
             transaction_type='savings_deposit',
             is_credit=False,
@@ -750,3 +772,130 @@ class RespondMembershipRequestView(APIView):
             target_id=str(group.id),
         )
         return Response({'status': 'rejected'})
+
+
+class GroupPreviewView(APIView):
+    """Safe public preview of a group for any authenticated user.
+
+    No membership required. Returns a non-sensitive subset (no invite code,
+    member list, fund balances, or ledger) so a user can decide whether to
+    request to join.
+    """
+
+    def get(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk).prefetch_related('memberships__user').first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(GroupPreviewSerializer(group, context={'request': request}).data)
+
+
+class DueDatesView(APIView):
+    """Aggregated upcoming due dates across everything the user owes.
+
+    Sources: njangi play schedules, active social funds, and active loans.
+    `horizon` in {3m, 6m, 12m, all} bounds how far ahead to look; recurring
+    njangi occurrences are generated up to that horizon (capped at 12 months).
+    """
+
+    def get(self, request):
+        from contributions.models import Contribution
+
+        try:
+            from loans.models import Loan
+        except Exception:
+            Loan = None
+
+        horizon = request.query_params.get('horizon', '3m')
+        months_map = {'3m': 3, '6m': 6, '12m': 12, 'all': 12}
+        months = months_map.get(horizon, 3)
+
+        now = timezone.now()
+        cutoff = now + relativedelta(months=months)
+
+        results = []
+
+        groups = NjangiGroup.objects.filter(
+            memberships__user=request.user,
+        ).distinct()
+
+        for group in groups:
+            first_due = group.next_play_due_datetime()
+            if not first_due:
+                continue
+            # Generate recurring occurrences up to the horizon.
+            occurrence = first_due
+            guard = 0
+            while occurrence and occurrence <= cutoff and guard < 60:
+                guard += 1
+                already_played = Contribution.objects.filter(
+                    group=group, user=request.user, status='completed',
+                    due_date=occurrence.date(),
+                ).exists()
+                if not already_played:
+                    results.append({
+                        'type': 'njangi',
+                        'label': f'Njangi - {group.name}',
+                        'group_id': str(group.id),
+                        'group_name': group.name,
+                        'amount': str(group.contribution_amount),
+                        'due_datetime': occurrence.isoformat(),
+                    })
+                # next occurrence strictly after this one
+                nxt = group.next_play_due_datetime(from_dt=occurrence)
+                if nxt and nxt <= occurrence:
+                    break
+                occurrence = nxt
+
+        # Social funds: active funds in the user's groups, end_date as soft due.
+        social_funds = SocialFund.objects.filter(
+            group__memberships__user=request.user, is_active=True,
+        ).select_related('group').distinct()
+        for fund in social_funds:
+            if not fund.end_date:
+                continue
+            due_dt = timezone.make_aware(
+                timezone.datetime.combine(fund.end_date, timezone.datetime.min.time()).replace(
+                    hour=23, minute=59,
+                ),
+                timezone.get_current_timezone(),
+            )
+            if due_dt < now or due_dt > cutoff:
+                continue
+            amount = None
+            if fund.target_amount is not None:
+                remaining = fund.target_amount - fund.balance
+                amount = str(remaining) if remaining > 0 else '0.00'
+            results.append({
+                'type': 'social_fund',
+                'label': f'Social Fund - {fund.group.name}',
+                'group_id': str(fund.group_id),
+                'group_name': fund.group.name,
+                'amount': amount,
+                'due_datetime': due_dt.isoformat(),
+            })
+
+        # Loan repayments: active loans with a due_date.
+        if Loan is not None:
+            loans = Loan.objects.filter(
+                user=request.user, status='active', due_date__isnull=False,
+            ).select_related('group')
+            for loan in loans:
+                due_dt = timezone.make_aware(
+                    timezone.datetime.combine(loan.due_date, timezone.datetime.min.time()).replace(
+                        hour=23, minute=59,
+                    ),
+                    timezone.get_current_timezone(),
+                )
+                if due_dt < now or due_dt > cutoff:
+                    continue
+                results.append({
+                    'type': 'loan_repayment',
+                    'label': f'Loan repayment - {loan.purpose}',
+                    'group_id': str(loan.group_id) if loan.group_id else None,
+                    'group_name': loan.group.name if loan.group_id else None,
+                    'amount': str(loan.remaining_balance),
+                    'due_datetime': due_dt.isoformat(),
+                })
+
+        results.sort(key=lambda r: r['due_datetime'])
+        return Response({'due_dates': results})
