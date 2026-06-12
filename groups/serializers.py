@@ -42,6 +42,7 @@ class GroupSerializer(serializers.ModelSerializer):
     current_picker = serializers.SerializerMethodField()
     pickers_per_cycle = serializers.IntegerField(read_only=True)
     end_date = serializers.DateField(read_only=True)
+    invitation_code = serializers.SerializerMethodField()
 
     class Meta:
         model = NjangiGroup
@@ -51,7 +52,7 @@ class GroupSerializer(serializers.ModelSerializer):
             'start_date', 'end_date', 'invitation_code', 'rules', 'members',
             'current_beneficiary_id', 'next_beneficiary_id', 'current_picker',
             'target_amount', 'duration_months', 'picking_mode',
-            'schedule_generated', 'pickers_per_cycle',
+            'schedule_generated', 'pickers_per_cycle', 'rotation_started',
         ]
 
     def get_average_mri(self, obj):
@@ -71,6 +72,15 @@ class GroupSerializer(serializers.ModelSerializer):
             ).order_by('rotation_position').first()
         return str(nxt.user_id) if nxt else None
 
+    def get_invitation_code(self, obj):
+        request = self.context.get('request')
+        if not request or not getattr(request, 'user', None) or not request.user.is_authenticated:
+            return None
+        membership = obj.memberships.filter(user=request.user).first()
+        if not membership or membership.role != 'president':
+            return None
+        return obj.invitation_code
+
     def get_current_picker(self, obj):
         if not obj.schedule_generated:
             return None
@@ -82,6 +92,14 @@ class GroupSerializer(serializers.ModelSerializer):
             'name': m.user.full_name,
             'rotation_position': m.rotation_position,
         }
+
+
+class GroupSearchSerializer(serializers.ModelSerializer):
+    member_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = NjangiGroup
+        fields = ['id', 'name', 'member_count', 'max_members']
 
 
 class CreateGroupSerializer(serializers.ModelSerializer):

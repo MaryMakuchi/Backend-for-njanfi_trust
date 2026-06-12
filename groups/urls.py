@@ -8,6 +8,7 @@ from groups.views import (
     GroupListCreateView,
     GroupMessageListCreateView,
     GroupSavingsView,
+    GroupSearchView,
     JoinGroupView,
     MembershipRequestListView,
     PlayNjangiView,
@@ -20,6 +21,7 @@ from groups.views import (
 
 urlpatterns = [
     path('groups/', GroupListCreateView.as_view(), name='group-list'),
+    path('groups/search/', GroupSearchView.as_view(), name='group-search'),
     path('groups/join/', JoinGroupView.as_view(), name='group-join'),
     path('groups/<uuid:pk>/', GroupDetailView.as_view(), name='group-detail'),
     path('groups/<uuid:pk>/picking-order/', AssignPickingOrderView.as_view(), name='group-picking-order'),

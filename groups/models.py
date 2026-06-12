@@ -35,6 +35,7 @@ class NjangiGroup(models.Model):
     duration_months = models.PositiveIntegerField(default=12)
     picking_mode = models.CharField(max_length=10, choices=PICKING_MODE_CHOICES, default='random')
     schedule_generated = models.BooleanField(default=False)
+    rotation_started = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

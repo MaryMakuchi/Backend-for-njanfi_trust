@@ -23,6 +23,7 @@ from groups.serializers import (
     CreateGroupSerializer,
     CreateSocialFundSerializer,
     GroupMessageSerializer,
+    GroupSearchSerializer,
     GroupSerializer,
     JoinGroupSerializer,
     MembershipRequestSerializer,
@@ -51,21 +52,41 @@ class GroupListCreateView(generics.ListCreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         group = serializer.save()
-        return Response(GroupSerializer(group).data, status=status.HTTP_201_CREATED)
+        return Response(
+            GroupSerializer(group, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class GroupSearchView(generics.ListAPIView):
+    """Lightweight group search by name, for users who are not yet members."""
+
+    serializer_class = GroupSearchSerializer
+
+    def get_queryset(self):
+        query = self.request.query_params.get('q', '').strip()
+        if not query:
+            return NjangiGroup.objects.none()
+        return NjangiGroup.objects.filter(name__icontains=query)
 
 
 class GroupDetailView(generics.RetrieveUpdateAPIView):
     http_method_names = ['get', 'patch', 'head', 'options']
 
     def get_queryset(self):
-        return NjangiGroup.objects.filter(
-            memberships__user=self.request.user,
-        ).prefetch_related('memberships__user')
+        return NjangiGroup.objects.all().prefetch_related('memberships__user')
 
     def get_serializer_class(self):
         if self.request.method == 'PATCH':
             return UpdateGroupSettingsSerializer
         return GroupSerializer
+
+    def get_object(self):
+        group = super().get_object()
+        if not GroupMembership.objects.filter(group=group, user=self.request.user).exists():
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('You are not a member of this group.')
+        return group
 
     def patch(self, request, *args, **kwargs):
         group = self.get_object()
@@ -79,7 +100,7 @@ class GroupDetailView(generics.RetrieveUpdateAPIView):
         serializer = UpdateGroupSettingsSerializer(group, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(GroupSerializer(group).data)
+        return Response(GroupSerializer(group, context={'request': request}).data)
 
 
 class JoinGroupView(APIView):
@@ -142,6 +163,12 @@ class AssignPickingOrderView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        if group.rotation_started:
+            return Response(
+                {'detail': 'Picking order cannot be changed once the rotation has started.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if group.member_count < 2:
             return Response(
                 {'detail': 'At least two members are required before assigning the picking order.'},
@@ -192,7 +219,7 @@ class AssignPickingOrderView(APIView):
         group.fund_balance = 0
         group.save(update_fields=['picking_mode', 'schedule_generated', 'cycle_progress', 'fund_balance'])
 
-        return Response(GroupSerializer(group).data)
+        return Response(GroupSerializer(group, context={'request': request}).data)
 
 
 class SocialFundListCreateView(generics.ListCreateAPIView):
@@ -345,7 +372,8 @@ class PlayNjangiView(APIView):
 
                 group.cycle_progress = 0
                 group.fund_balance = 0
-                group.save(update_fields=['cycle_progress', 'fund_balance'])
+                group.rotation_started = True
+                group.save(update_fields=['cycle_progress', 'fund_balance', 'rotation_started'])
 
                 payout_data = {
                     'amount': str(payout_amount),
