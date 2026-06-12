@@ -4,7 +4,12 @@ require('dotenv').config();
 const PRIVATE_KEY = process.env.CELO_PRIVATE_KEY || '';
 
 module.exports = {
-  solidity: '0.8.24',
+  // evmVersion 'paris' avoids the PUSH0 opcode that older Ganache builds
+  // reject with "invalid opcode". Keep in sync with scripts/compile.js.
+  solidity: {
+    version: '0.8.24',
+    settings: { evmVersion: 'paris' },
+  },
   networks: {
     alfajores: {
       url: process.env.CELO_RPC_URL || 'https://alfajores-forno.celo-testnet.org',

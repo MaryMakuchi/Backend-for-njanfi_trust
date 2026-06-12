@@ -14,6 +14,10 @@ const input = {
     'NjangiLedger.sol': { content: source },
   },
   settings: {
+    // Target the pre-Shanghai "paris" EVM so the bytecode does NOT use the
+    // PUSH0 opcode (0x5f). Older Ganache builds don't implement PUSH0 and
+    // revert any such bytecode with "invalid opcode". Safe for testnets too.
+    evmVersion: 'paris',
     outputSelection: {
       '*': { '*': ['abi', 'evm.bytecode.object'] },
     },
