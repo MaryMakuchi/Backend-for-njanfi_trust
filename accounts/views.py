@@ -16,6 +16,7 @@ from accounts.serializers import (
     UserSerializer,
     VerifyEmailSerializer,
     VerifyPhoneSerializer,
+    WalletTopUpSerializer,
     WalletWithdrawSerializer,
 )
 from accounts.services import build_dashboard, record_transaction, user_response
@@ -132,14 +133,20 @@ class LinkedAccountDeleteView(generics.DestroyAPIView):
 
 class WalletTopUpView(APIView):
     def post(self, request):
-        serializer = AmountSerializer(data=request.data)
+        serializer = WalletTopUpSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         amount = serializer.validated_data['amount']
+        linked_account_id = serializer.validated_data.get('linked_account_id')
 
         user = request.user
+        title = 'Wallet Top-up'
+        if linked_account_id:
+            linked_account = LinkedAccount.objects.get(id=linked_account_id, user=user)
+            title = f'Wallet Top-up ({linked_account.provider} - {linked_account.account_number})'
+
         user.wallet_balance += amount
         user.save(update_fields=['wallet_balance'])
-        record_transaction(user, 'Wallet Top-up', amount, 'wallet_topup', is_credit=True)
+        record_transaction(user, title, amount, 'wallet_topup', is_credit=True)
         return Response({'wallet_balance': user.wallet_balance})
 
 

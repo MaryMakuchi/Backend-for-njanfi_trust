@@ -145,6 +145,16 @@ class WalletWithdrawSerializer(AmountSerializer):
         return value
 
 
+class WalletTopUpSerializer(AmountSerializer):
+    linked_account_id = serializers.UUIDField(required=False, allow_null=True)
+
+    def validate_linked_account_id(self, value):
+        user = self.context['request'].user
+        if not LinkedAccount.objects.filter(id=value, user=user).exists():
+            raise serializers.ValidationError('Linked account not found.')
+        return value
+
+
 class ChangePasswordSerializer(serializers.Serializer):
     current_password = serializers.CharField(write_only=True)
     new_password = serializers.CharField(write_only=True, min_length=8)
