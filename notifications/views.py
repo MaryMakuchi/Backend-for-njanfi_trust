@@ -13,6 +13,20 @@ class NotificationListView(generics.ListAPIView):
         return Notification.objects.filter(user=self.request.user)
 
 
+class UnreadCountView(APIView):
+    def get(self, request):
+        count = Notification.objects.filter(user=request.user, is_read=False).count()
+        return Response({'unread_count': count})
+
+
+class MarkAllNotificationsReadView(APIView):
+    def post(self, request):
+        updated = Notification.objects.filter(
+            user=request.user, is_read=False,
+        ).update(is_read=True)
+        return Response({'marked_read': updated, 'unread_count': 0})
+
+
 class MarkNotificationReadView(APIView):
     def patch(self, request, pk):
         notification = Notification.objects.filter(user=request.user, pk=pk).first()

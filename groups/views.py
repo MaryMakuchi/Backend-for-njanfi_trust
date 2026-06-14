@@ -148,9 +148,10 @@ class JoinGroupView(APIView):
                 user=president.user,
                 title=f'New membership request for {group.name}',
                 body=f'{request.user.full_name} has requested to join {group.name}.',
-                notification_type='group_announcement',
+                notification_type='membership_request',
                 target_type='group',
                 target_id=str(group.id),
+                target_view='members',
             )
 
         return Response(

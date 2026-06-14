@@ -12,6 +12,15 @@ class Notification(models.Model):
         ('upcoming_payout', 'Upcoming Payout'),
         ('group_announcement', 'Group Announcement'),
         ('mri_update', 'MRI Update'),
+        ('membership_request', 'Membership Request'),
+    ]
+
+    TARGET_VIEW_CHOICES = [
+        ('', 'Default'),
+        ('members', 'Members'),
+        ('ledger', 'Ledger'),
+        ('savings', 'Savings'),
+        ('loans', 'Loans'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -36,6 +45,13 @@ class Notification(models.Model):
         ],
     )
     target_id = models.CharField(max_length=64, blank=True, default='')
+    target_view = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        choices=TARGET_VIEW_CHOICES,
+        help_text='Optional sub-view within the target (e.g. the Members tab of a group).',
+    )
 
     class Meta:
         ordering = ['-created_at']
