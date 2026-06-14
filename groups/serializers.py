@@ -145,6 +145,13 @@ class CreateGroupSerializer(serializers.ModelSerializer):
             'play_deadline_time': {'required': False, 'allow_null': True},
         }
 
+    def validate_name(self, value):
+        # Exact (case-sensitive) match: "Patty Crab" and "patty crab" are
+        # treated as different names, but an identical name is rejected.
+        if NjangiGroup.objects.filter(name=value).exists():
+            raise serializers.ValidationError('A group with this name already exists.')
+        return value
+
     def validate(self, attrs):
         _validate_schedule(attrs)
         target_amount = attrs.get('target_amount')
