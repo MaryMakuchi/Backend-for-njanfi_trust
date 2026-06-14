@@ -1,4 +1,3 @@
-from datetime import date
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand
@@ -7,12 +6,14 @@ from accounts.models import User
 from groups.models import GroupMembership, MembershipRequest, NjangiGroup
 
 PASSWORD = 'Test@123'
+GROUP_NAME = 'Patty Crab'
 
 
 class Command(BaseCommand):
     help = (
-        'Seed 2 test users for the Patty Crab group: one already a member, '
-        'one with a pending membership request.'
+        'Seed 2 test logins for the existing "Patty Crab" group: one as a '
+        'member, one with a pending membership request. Does NOT create the '
+        'group itself — it attaches to a Patty Crab group you already created.'
     )
 
     def handle(self, *args, **options):
@@ -21,7 +22,7 @@ class Command(BaseCommand):
             defaults={
                 'phone': '+237675555555',
                 'full_name': 'Grace Tabe',
-                'badge': 'Group President',
+                'badge': 'Active Member',
                 'is_kyc_verified': True,
                 'phone_verified': True,
                 'email_verified': True,
@@ -64,32 +65,29 @@ class Command(BaseCommand):
         kevin.set_password(PASSWORD)
         kevin.save()
 
-        group, _ = NjangiGroup.objects.get_or_create(
-            name='Patty Crab',
-            defaults={
-                'contribution_amount': Decimal('25000'),
-                'frequency': 'Monthly',
-                'max_members': 6,
-                'start_date': date(2026, 1, 1),
-                'rules': 'Monthly contributions of 25,000 CFA.',
-                'target_amount': Decimal('100000'),
-                'duration_months': 6,
-                'picking_mode': 'random',
-                'schedule_generated': False,
-                'created_by': grace,
-            },
-        )
+        self.stdout.write(self.style.SUCCESS('Test logins ready:'))
+        self.stdout.write(f'  grace.member@njangi.test / {PASSWORD}')
+        self.stdout.write(f'  kevin.requester@njangi.test / {PASSWORD}')
+
+        # Attach to an EXISTING Patty Crab group if you have one. We never
+        # create the group here, so it won't clash with your own.
+        group = NjangiGroup.objects.filter(name=GROUP_NAME).order_by('created_at').first()
+        if not group:
+            self.stdout.write(self.style.WARNING(
+                f'No "{GROUP_NAME}" group found yet. Create it in the app, then '
+                f're-run this command to attach Grace (member) and Kevin (pending request).'
+            ))
+            return
 
         GroupMembership.objects.update_or_create(
             group=group, user=grace,
-            defaults={'role': 'president', 'rotation_position': 1},
+            defaults={'role': 'member'},
         )
-
         MembershipRequest.objects.get_or_create(
             group=group, user=kevin,
             defaults={'status': 'pending'},
         )
-
-        self.stdout.write(self.style.SUCCESS('Patty Crab test users seeded:'))
-        self.stdout.write(f'  grace.member@njangi.test / {PASSWORD}  (President, member of Patty Crab)')
-        self.stdout.write(f'  kevin.requester@njangi.test / {PASSWORD}  (Pending join request to Patty Crab)')
+        self.stdout.write(self.style.SUCCESS(
+            f'Grace added as a member of "{group.name}", '
+            f'Kevin added as a pending join request.'
+        ))
