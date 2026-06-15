@@ -296,23 +296,44 @@ class AssignPickingOrderView(APIView):
         serializer = AssignPickingOrderSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         mode = serializer.validated_data['mode']
-        order = serializer.validated_data['order']
-        memberships = list(group.memberships.all())
-
-        member_user_ids = {m.user_id for m in memberships}
-        order_set = set(order)
-        if len(order) != len(order_set):
-            return Response(
-                {'order': ['The order must not contain duplicate members.']},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if not order_set.issubset(member_user_ids):
-            return Response(
-                {'order': ['The order may only include current members of the group.']},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+        memberships = list(group.memberships.select_related('user').all())
         membership_by_user = {m.user_id: m for m in memberships}
+
+        from groups.picking import gating_violations, mri_weighted_order
+
+        if mode == 'mri_weighted':
+            # Server computes a reliability-weighted order; trusted members are
+            # favoured for the earliest (highest-risk) payout slots.
+            order = mri_weighted_order(memberships)
+        else:
+            order = serializer.validated_data['order']
+            member_user_ids = set(membership_by_user)
+            order_set = set(order)
+            if len(order) != len(order_set):
+                return Response(
+                    {'order': ['The order must not contain duplicate members.']},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not order_set.issubset(member_user_ids):
+                return Response(
+                    {'order': ['The order may only include current members of the group.']},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # MRI-gated early-payout protection: block clearly unreliable
+            # members from the early window when the group has enough trusted
+            # members to avoid it. Suggest the reliability-weighted mode instead.
+            violations = gating_violations(order, membership_by_user)
+            if violations:
+                names = ', '.join(violations)
+                return Response(
+                    {'order': [
+                        f'These members have a low reliability (MRI) score and cannot be '
+                        f'placed in the early payout positions: {names}. Move them to later '
+                        f'positions, or use the reliability-weighted picking mode.'
+                    ]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         # Assign positions for members included in the order.
         for position, user_id in enumerate(order, start=1):

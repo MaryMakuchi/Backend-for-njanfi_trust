@@ -19,6 +19,7 @@ class NjangiGroup(models.Model):
     PICKING_MODE_CHOICES = [
         ('random', 'Random'),
         ('manual', 'Manual'),
+        ('mri_weighted', 'Reliability (MRI) weighted'),
     ]
 
     PLAY_FREQUENCY_CHOICES = [
@@ -46,7 +47,7 @@ class NjangiGroup(models.Model):
     cycle_progress = models.PositiveIntegerField(default=0)
     target_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     duration_months = models.PositiveIntegerField(default=12)
-    picking_mode = models.CharField(max_length=10, choices=PICKING_MODE_CHOICES, default='random')
+    picking_mode = models.CharField(max_length=20, choices=PICKING_MODE_CHOICES, default='random')
     schedule_generated = models.BooleanField(default=False)
     rotation_started = models.BooleanField(default=False)
     # Recurring njangi play schedule. Note: the existing ``frequency`` field

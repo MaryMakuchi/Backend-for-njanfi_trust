@@ -194,10 +194,14 @@ class JoinGroupSerializer(serializers.Serializer):
 
 
 class AssignPickingOrderSerializer(serializers.Serializer):
-    mode = serializers.ChoiceField(choices=['random', 'manual'])
+    mode = serializers.ChoiceField(choices=['random', 'manual', 'mri_weighted'])
     order = serializers.ListField(child=serializers.UUIDField(), required=False)
 
     def validate(self, attrs):
+        # In mri_weighted mode the server computes the order from members' MRI,
+        # so no client-supplied order is required.
+        if attrs.get('mode') == 'mri_weighted':
+            return attrs
         if not attrs.get('order'):
             raise serializers.ValidationError(
                 'Provide an "order" list of member user IDs to assign the picking order. '
