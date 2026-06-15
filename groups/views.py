@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
+from django.db import models
 from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.response import Response
@@ -109,6 +110,114 @@ class GroupDetailView(generics.RetrieveUpdateAPIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(GroupSerializer(group, context={'request': request}).data)
+
+
+class GroupReconciliationView(APIView):
+    """Treasurer-liability reconciliation for a group.
+
+    Surfaces, for any member, how the current cycle's money adds up:
+    what *should* have been collected (expected) vs. what actually came in
+    (collected) vs. what was paid out — and which specific members are still
+    behind. This protects whoever holds the money: any gap is traced to named
+    late payers rather than landing on the treasurer as an unexplained shortfall.
+    """
+
+    def get(self, request, pk):
+        from rest_framework.exceptions import PermissionDenied
+
+        from ledger.models import Transaction
+
+        group = generics.get_object_or_404(
+            NjangiGroup.objects.prefetch_related('memberships__user'), pk=pk,
+        )
+        my_membership = group.memberships.filter(user=request.user).first()
+        if not my_membership:
+            raise PermissionDenied('You are not a member of this group.')
+
+        memberships = list(group.memberships.select_related('user'))
+        active_members = len(memberships)
+        contribution_amount = group.contribution_amount
+
+        # The current cycle starts right after the most recent payout. Before the
+        # first payout the cycle has run since the group began, so we count all
+        # contributions.
+        last_payout = (
+            group.transactions.filter(transaction_type='payout')
+            .order_by('-created_at')
+            .first()
+        )
+        cycle_start = last_payout.created_at if last_payout else None
+
+        cycle_contribs = group.transactions.filter(
+            transaction_type='contribution', status='completed',
+        )
+        if cycle_start is not None:
+            cycle_contribs = cycle_contribs.filter(created_at__gt=cycle_start)
+
+        paid_by_user = {}
+        for t in cycle_contribs:
+            paid_by_user[t.user_id] = paid_by_user.get(t.user_id, Decimal('0')) + t.amount
+
+        collected = sum(paid_by_user.values(), Decimal('0'))
+        expected = contribution_amount * active_members
+        outstanding = expected - collected
+        if collected > expected:
+            cycle_status = 'surplus'
+        elif outstanding <= 0:
+            cycle_status = 'on_track'
+        else:
+            cycle_status = 'shortfall'
+
+        members_payload = []
+        unpaid_payload = []
+        for m in memberships:
+            amount_paid = paid_by_user.get(m.user_id, Decimal('0'))
+            has_paid = amount_paid >= contribution_amount
+            entry = {
+                'user_id': str(m.user_id),
+                'name': m.user.full_name,
+                'role': m.role,
+                'has_paid': has_paid,
+                'amount_paid': str(amount_paid),
+            }
+            members_payload.append(entry)
+            if not has_paid:
+                unpaid_payload.append(entry)
+
+        # Lifetime totals across all cycles, for the running books.
+        def _sum(qs_type):
+            total = group.transactions.filter(
+                transaction_type=qs_type, status='completed',
+            ).aggregate(total=models.Sum('amount'))['total']
+            return total or Decimal('0')
+
+        total_collected = _sum('contribution')
+        total_paid_out = _sum('payout')
+        loans_out = _sum('loan_disbursement') - _sum('loan_repayment')
+
+        return Response({
+            'group_id': str(group.id),
+            'group_name': group.name,
+            'contribution_amount': str(contribution_amount),
+            'active_members': active_members,
+            'max_members': group.max_members,
+            'is_president': my_membership.role == 'president',
+            'cycle': {
+                'expected': str(expected),
+                'collected': str(collected),
+                'outstanding': str(max(outstanding, Decimal('0'))),
+                'paid_count': len(paid_by_user),
+                'status': cycle_status,
+            },
+            'lifetime': {
+                'total_collected': str(total_collected),
+                'total_paid_out': str(total_paid_out),
+                'loans_outstanding': str(loans_out),
+                'fund_balance': str(group.fund_balance),
+            },
+            'members': members_payload,
+            'unpaid_members': unpaid_payload,
+        })
 
 
 class JoinGroupView(APIView):
