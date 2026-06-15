@@ -159,3 +159,9 @@ CELO_EXPLORER_BASE_URL = config(
 # `X-Momo-Signature` header. Used while the real MTN MoMo Collections API
 # integration is stubbed out.
 MOMO_WEBHOOK_SECRET = config('MOMO_WEBHOOK_SECRET', default='dev-momo-secret')
+
+# --- Push notifications (Firebase Cloud Messaging) ---
+# Optional: when unset, push sending is a no-op and only in-app notifications
+# are created. Set FCM_SERVER_KEY to your Firebase project's Cloud Messaging
+# server key to enable real device pushes.
+FCM_SERVER_KEY = config('FCM_SERVER_KEY', default='')

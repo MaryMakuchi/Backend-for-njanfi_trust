@@ -58,3 +58,33 @@ class Notification(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class DeviceToken(models.Model):
+    """A device's push-notification token (e.g. Firebase Cloud Messaging).
+
+    One user may have several devices. Tokens are unique; re-registering the
+    same token simply re-points it at the current user and refreshes it.
+    """
+    PLATFORM_CHOICES = [
+        ('android', 'Android'),
+        ('ios', 'iOS'),
+        ('web', 'Web'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='device_tokens',
+    )
+    token = models.CharField(max_length=255, unique=True)
+    platform = models.CharField(max_length=10, choices=PLATFORM_CHOICES, default='android')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return f'{self.user_id} · {self.platform} · {self.token[:12]}…'
