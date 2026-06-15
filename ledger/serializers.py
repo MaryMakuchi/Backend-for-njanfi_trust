@@ -10,12 +10,14 @@ class TransactionSerializer(serializers.ModelSerializer):
     date = serializers.DateTimeField(source='created_at')
     explorer_url = serializers.SerializerMethodField()
     on_chain = serializers.SerializerMethodField()
+    initiated_by = serializers.CharField(source='user.full_name', read_only=True, default=None)
 
     class Meta:
         model = Transaction
         fields = [
             'id', 'title', 'amount', 'type', 'status', 'date',
             'group_name', 'hash', 'is_credit', 'explorer_url', 'on_chain',
+            'initiated_by',
         ]
 
     def get_on_chain(self, obj):

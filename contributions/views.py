@@ -50,9 +50,8 @@ class PayContributionView(APIView):
         record_on_chain(transaction)
         transaction.save(update_fields=['hash', 'status'])
 
-        user = request.user
-        user.mri_contribution_consistency = min(float(user.mri_contribution_consistency) + 0.2, 10)
-        user.mri_trend = 0.2
-        user.recalculate_mri()
+        # Recompute MRI fairly from history rather than a flat bump.
+        from accounts.mri import recompute_mri
+        recompute_mri(request.user)
 
         return Response(TransactionSerializer(transaction).data, status=status.HTTP_201_CREATED)

@@ -343,6 +343,10 @@ class PlayNjangiView(APIView):
             request.user, title, amount, 'contribution', is_credit=False, group=group,
         )
 
+        # Playing on time fairly recomputes the member's MRI from history.
+        from accounts.mri import recompute_mri
+        recompute_mri(request.user)
+
         group.refresh_from_db()
 
         cycle_completed = False

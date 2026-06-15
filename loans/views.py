@@ -212,4 +212,10 @@ class LoanRepayView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         loan = serializer.save()
+
+        # Repaying (especially clearing an overdue loan) should fairly lift the
+        # member's MRI back up.
+        from accounts.mri import recompute_mri
+        recompute_mri(request.user)
+
         return Response(LoanSerializer(loan).data)

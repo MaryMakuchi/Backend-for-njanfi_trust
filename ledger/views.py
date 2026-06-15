@@ -52,7 +52,7 @@ class GroupLedgerView(generics.ListAPIView):
         if not is_member:
             raise PermissionDenied('You are not a member of this group.')
 
-        qs = Transaction.objects.filter(group_id=group_id).select_related('group')
+        qs = Transaction.objects.filter(group_id=group_id).select_related('group', 'user')
 
         category = self.request.query_params.get('category', 'all')
         if category and category != 'all':
