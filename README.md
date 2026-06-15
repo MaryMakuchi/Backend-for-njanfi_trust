@@ -1,6 +1,6 @@
-# Njangi Trust API
+# Nkap API
 
-Django REST Framework backend for the **Njangi Trust** mobile application.
+Django REST Framework backend for the **Nkap** mobile application — Cameroon's circle of money and trust.
 
 ## Stack
 
