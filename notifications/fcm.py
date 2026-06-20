@@ -1,25 +1,64 @@
-"""Firebase Cloud Messaging (FCM) push sender.
+"""Firebase Cloud Messaging (FCM) push sender — HTTP v1 API.
 
-Sending is intentionally best-effort and *optional*: if no ``FCM_SERVER_KEY``
-is configured the helpers become no-ops, so the rest of the app (and the test
-suite) runs unchanged without a Firebase project. Configure the key via the
-``FCM_SERVER_KEY`` environment variable to enable real pushes.
+Sending is intentionally best-effort and *optional*: if no Firebase
+service-account credentials are configured the helpers become no-ops, so the
+rest of the app (and the test suite) runs unchanged without a Firebase project.
+
+To enable real pushes, set ``FIREBASE_CREDENTIALS`` (in the environment / .env)
+to the path of your Firebase service-account JSON file. This uses the modern
+FCM HTTP v1 API via the ``firebase-admin`` SDK.
 """
 import logging
+import os
 
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-FCM_ENDPOINT = 'https://fcm.googleapis.com/fcm/send'
+# Lazily-initialised firebase_admin app + messaging module. We cache them so the
+# SDK is only initialised once per process, on first use.
+_fb_app = None
+_messaging = None
+_init_failed = False
 
 
-def _server_key():
-    return getattr(settings, 'FCM_SERVER_KEY', '') or ''
+def _credentials_path():
+    return getattr(settings, 'FIREBASE_CREDENTIALS', '') or ''
+
+
+def _ensure_initialised():
+    """Initialise firebase_admin once. Returns the messaging module or None."""
+    global _fb_app, _messaging, _init_failed
+    if _messaging is not None:
+        return _messaging
+    if _init_failed:
+        return None
+
+    path = _credentials_path()
+    if not path or not os.path.exists(path):
+        _init_failed = True
+        return None
+
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, messaging
+
+        # Reuse an already-initialised default app if present.
+        try:
+            _fb_app = firebase_admin.get_app()
+        except ValueError:
+            cred = credentials.Certificate(path)
+            _fb_app = firebase_admin.initialize_app(cred)
+        _messaging = messaging
+        return _messaging
+    except Exception as exc:  # missing package / bad credentials / etc.
+        logger.warning('Firebase init failed: %s', exc)
+        _init_failed = True
+        return None
 
 
 def push_enabled():
-    return bool(_server_key())
+    return _ensure_initialised() is not None
 
 
 def send_push(tokens, title, body, data=None):
@@ -29,30 +68,26 @@ def send_push(tokens, title, body, data=None):
     Never raises — push failures must not break the request that triggered them.
     """
     tokens = [t for t in (tokens or []) if t]
-    if not tokens or not push_enabled():
+    if not tokens:
         return 0
 
-    import requests
+    messaging = _ensure_initialised()
+    if messaging is None:
+        return 0
 
-    headers = {
-        'Authorization': f'key={_server_key()}',
-        'Content-Type': 'application/json',
-    }
-    payload = {
-        'registration_ids': tokens,
-        'notification': {'title': title, 'body': body},
-        'data': {k: str(v) for k, v in (data or {}).items()},
-        'priority': 'high',
-    }
+    # FCM v1 data payload values must all be strings.
+    str_data = {k: str(v) for k, v in (data or {}).items()}
 
     try:
-        resp = requests.post(FCM_ENDPOINT, json=payload, headers=headers, timeout=10)
-        if resp.status_code != 200:
-            logger.warning('FCM push failed (%s): %s', resp.status_code, resp.text[:200])
-            return 0
-        result = resp.json()
-        return int(result.get('success', 0))
-    except Exception as exc:  # network/JSON/etc. — never propagate
+        message = messaging.MulticastMessage(
+            tokens=tokens,
+            notification=messaging.Notification(title=title, body=body),
+            data=str_data,
+            android=messaging.AndroidConfig(priority='high'),
+        )
+        response = messaging.send_each_for_multicast(message)
+        return int(response.success_count)
+    except Exception as exc:  # network/SDK errors — never propagate
         logger.warning('FCM push error: %s', exc)
         return 0
 

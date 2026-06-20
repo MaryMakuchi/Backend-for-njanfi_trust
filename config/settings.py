@@ -166,6 +166,12 @@ MOMO_WEBHOOK_SECRET = config('MOMO_WEBHOOK_SECRET', default='dev-momo-secret')
 
 # --- Push notifications (Firebase Cloud Messaging) ---
 # Optional: when unset, push sending is a no-op and only in-app notifications
-# are created. Set FCM_SERVER_KEY to your Firebase project's Cloud Messaging
-# server key to enable real device pushes.
+# are created. To enable real device pushes, set FIREBASE_CREDENTIALS to the
+# path of your Firebase service-account JSON file (downloaded from the Firebase
+# console → Project Settings → Service Accounts → Generate new private key).
+# This uses the modern FCM HTTP v1 API.
+FIREBASE_CREDENTIALS = config('FIREBASE_CREDENTIALS', default='')
+
+# Legacy server key (deprecated by Firebase). Kept for backward compatibility
+# only; FIREBASE_CREDENTIALS above is the supported path.
 FCM_SERVER_KEY = config('FCM_SERVER_KEY', default='')

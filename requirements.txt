@@ -11,3 +11,4 @@ cryptography>=42
 python-dateutil>=2.9
 web3>=7.0,<8.0
 eth-account>=0.13,<1.0
+firebase-admin>=6.5,<7.0
