@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 
 from django.utils import timezone
 from rest_framework import serializers
@@ -22,10 +23,13 @@ class LoanSerializer(serializers.ModelSerializer):
 
 class RequestLoanSerializer(serializers.ModelSerializer):
     group_id = serializers.UUIDField(required=True, write_only=True)
+    interest_rate = serializers.DecimalField(
+        max_digits=5, decimal_places=2, required=False, default=Decimal('5.0'),
+    )
 
     class Meta:
         model = Loan
-        fields = ['amount', 'purpose', 'duration_months', 'group_id']
+        fields = ['amount', 'purpose', 'duration_months', 'group_id', 'interest_rate']
 
     def validate_amount(self, value):
         user = self.context['request'].user
@@ -42,6 +46,20 @@ class RequestLoanSerializer(serializers.ModelSerializer):
         if not group:
             raise serializers.ValidationError('A group is required to request a loan.')
         return value
+
+    def validate(self, attrs):
+        # Only the group treasurer can set a custom interest_rate.
+        # Non-treasurers have any provided value discarded (default applies).
+        user = self.context['request'].user
+        group_id = attrs.get('group_id')
+        if group_id:
+            from groups.models import GroupMembership
+            is_treasurer = GroupMembership.objects.filter(
+                group_id=group_id, user=user, role='treasurer',
+            ).exists()
+            if not is_treasurer:
+                attrs.pop('interest_rate', None)
+        return attrs
 
     def create(self, validated_data):
         from groups.models import NjangiGroup

@@ -42,12 +42,13 @@ class GroupMemberSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source='user.full_name')
     mri_score = serializers.DecimalField(source='user.mri_score', max_digits=4, decimal_places=1)
     role = serializers.CharField()
+    slot_name = serializers.CharField()
     pick_cycle = serializers.SerializerMethodField()
 
     class Meta:
         model = GroupMembership
         fields = [
-            'id', 'name', 'role', 'mri_score', 'is_current_beneficiary',
+            'id', 'name', 'slot_name', 'role', 'mri_score', 'is_current_beneficiary',
             'rotation_position', 'pick_cycle',
         ]
 

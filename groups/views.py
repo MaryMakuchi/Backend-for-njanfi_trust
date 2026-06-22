@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
+from django.contrib.auth import get_user_model
 from django.db import models
 from django.utils import timezone
 from rest_framework import generics, status
@@ -9,10 +10,13 @@ from rest_framework.views import APIView
 
 from accounts.services import record_transaction
 from groups.models import (
+    BoardElection,
+    ElectionVote,
     GroupMembership,
     GroupMessage,
     MembershipRequest,
     NjangiGroup,
+    Nomination,
     SavingsContribution,
     SavingsPeriod,
     SocialFund,
@@ -235,11 +239,6 @@ class JoinGroupView(APIView):
             group = NjangiGroup.objects.filter(id=group_id).first()
             if not group:
                 return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        if GroupMembership.objects.filter(group=group, user=request.user).exists():
-            return Response(
-                {'detail': 'You are already a member of this group.'}, status=status.HTTP_400_BAD_REQUEST,
-            )
 
         if MembershipRequest.objects.filter(group=group, user=request.user, status='pending').exists():
             return Response(
@@ -884,11 +883,15 @@ class RespondMembershipRequestView(APIView):
                 return Response({'detail': 'This group is full.'}, status=status.HTTP_400_BAD_REQUEST)
 
             position = group.member_count + 1
+            display_name = membership_request.user.full_name
+            existing_slots = GroupMembership.objects.filter(group=group, user=membership_request.user).count()
+            slot_name = display_name if existing_slots == 0 else f'{display_name} - Slot {existing_slots + 1}'
             GroupMembership.objects.create(
                 group=group,
                 user=membership_request.user,
                 role='member',
                 rotation_position=position,
+                slot_name=slot_name,
             )
             membership_request.status = 'accepted'
             membership_request.decided_at = timezone.now()
@@ -1044,3 +1047,256 @@ class DueDatesView(APIView):
 
         results.sort(key=lambda r: r['due_datetime'])
         return Response({'due_dates': results})
+
+
+class StartElectionView(APIView):
+    def post(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = GroupMembership.objects.filter(group=group, user=request.user).first()
+        if not membership or membership.role != 'president':
+            return Response(
+                {'detail': 'Only the group president can start an election.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        active = BoardElection.objects.filter(group=group).exclude(status='complete').first()
+        if active:
+            return Response(
+                {'detail': 'An election is already in progress.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        election = BoardElection.objects.create(group=group, initiated_by=request.user, status='nominations')
+        return Response({
+            'id': str(election.id),
+            'group_id': str(group.id),
+            'status': election.status,
+            'created_at': election.created_at.isoformat(),
+        }, status=status.HTTP_201_CREATED)
+
+
+class ElectionDetailView(APIView):
+    def get(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        election = BoardElection.objects.filter(group=group).exclude(status='complete').first()
+        if not election:
+            return Response({'election': None})
+
+        nominations = Nomination.objects.filter(election=election).select_related('nominee', 'nominated_by')
+        votes = ElectionVote.objects.filter(election=election, voter=request.user)
+        my_votes = {v.role: str(v.nominee_id) for v in votes}
+
+        nom_data = {}
+        for n in nominations:
+            role = n.role
+            if role not in nom_data:
+                nom_data[role] = []
+            nom_data[role].append({
+                'nominee_id': str(n.nominee_id),
+                'nominee_name': n.nominee.full_name,
+                'nomination_count': n.nomination_count,
+            })
+
+        return Response({
+            'id': str(election.id),
+            'status': election.status,
+            'created_at': election.created_at.isoformat(),
+            'nominations': nom_data,
+            'my_votes': my_votes,
+        })
+
+
+class NominateView(APIView):
+    def post(self, request, pk):
+        User = get_user_model()
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        election = BoardElection.objects.filter(group=group, status='nominations').first()
+        if not election:
+            return Response(
+                {'detail': 'No active nomination phase for this group.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        nominee_username = request.data.get('nominee_username')
+        role = request.data.get('role')
+
+        valid_roles = ['president', 'vice_president', 'treasurer', 'secretary', 'auditor']
+        if role not in valid_roles:
+            return Response(
+                {'detail': f'Invalid role. Choose from: {", ".join(valid_roles)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            nominee = User.objects.get(username=nominee_username)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not GroupMembership.objects.filter(group=group, user=nominee).exists():
+            return Response(
+                {'detail': 'Nominee is not a member of this group.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        nomination, created = Nomination.objects.get_or_create(
+            election=election, nominee=nominee, role=role,
+            defaults={'nominated_by': request.user, 'nomination_count': 1},
+        )
+        if not created:
+            nomination.nomination_count += 1
+            nomination.save(update_fields=['nomination_count'])
+
+        return Response({
+            'nominee_id': str(nominee.id),
+            'nominee_name': nominee.full_name,
+            'role': role,
+            'nomination_count': nomination.nomination_count,
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class AdvanceElectionView(APIView):
+    def post(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = GroupMembership.objects.filter(group=group, user=request.user).first()
+        if not membership or membership.role != 'president':
+            return Response(
+                {'detail': 'Only the group president can advance the election.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        election = BoardElection.objects.filter(group=group).exclude(status='complete').first()
+        if not election:
+            return Response({'detail': 'No active election found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if election.status == 'nominations':
+            election.status = 'voting'
+            election.save(update_fields=['status'])
+            return Response({'status': election.status})
+
+        if election.status == 'voting':
+            valid_roles = ['president', 'vice_president', 'treasurer', 'secretary', 'auditor']
+            role_winners = {}
+
+            for role in valid_roles:
+                vote_counts = {}
+                for vote in ElectionVote.objects.filter(election=election, role=role).select_related('nominee'):
+                    vid = vote.nominee_id
+                    vote_counts[vid] = vote_counts.get(vid, 0) + 1
+                if vote_counts:
+                    winner_id = max(vote_counts, key=lambda x: vote_counts[x])
+                    role_winners[role] = winner_id
+
+            # Reset all members to 'member' role
+            GroupMembership.objects.filter(group=group).update(role='member')
+
+            # Assign winners their roles
+            for role, winner_id in role_winners.items():
+                GroupMembership.objects.filter(group=group, user_id=winner_id).update(role=role)
+
+            election.status = 'complete'
+            election.save(update_fields=['status'])
+
+            return Response({
+                'status': election.status,
+                'winners': {r: str(uid) for r, uid in role_winners.items()},
+            })
+
+        return Response({'detail': 'Election is already complete.'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ElectionVoteView(APIView):
+    def post(self, request, pk):
+        User = get_user_model()
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        election = BoardElection.objects.filter(group=group, status='voting').first()
+        if not election:
+            return Response(
+                {'detail': 'No active voting phase for this group.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        nominee_id = request.data.get('nominee_id')
+        role = request.data.get('role')
+
+        valid_roles = ['president', 'vice_president', 'treasurer', 'secretary', 'auditor']
+        if role not in valid_roles:
+            return Response({'detail': 'Invalid role.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            nominee = User.objects.get(id=nominee_id)
+        except (User.DoesNotExist, Exception):
+            return Response({'detail': 'Nominee not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not GroupMembership.objects.filter(group=group, user=nominee).exists():
+            return Response(
+                {'detail': 'Nominee is not a member of this group.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not Nomination.objects.filter(election=election, nominee=nominee, role=role).exists():
+            return Response(
+                {'detail': 'This person was not nominated for this role.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        vote, created = ElectionVote.objects.update_or_create(
+            election=election, voter=request.user, role=role,
+            defaults={'nominee': nominee},
+        )
+
+        return Response({
+            'nominee_id': str(nominee.id),
+            'role': role,
+            'voted_at': vote.voted_at.isoformat(),
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class UserSearchView(APIView):
+    def get(self, request):
+        User = get_user_model()
+        q = request.query_params.get('q', '').strip()
+        if not q or len(q) < 2:
+            return Response({'results': []})
+        users = User.objects.filter(username__icontains=q)[:10]
+        return Response({'results': [
+            {'id': str(u.id), 'username': u.username, 'name': u.full_name}
+            for u in users
+        ]})
+
+
+class MyGroupSlotsView(APIView):
+    def get(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        memberships = GroupMembership.objects.filter(group=group, user=request.user).select_related('user')
+        if not memberships.exists():
+            return Response({'detail': 'You are not a member of this group.'}, status=status.HTTP_403_FORBIDDEN)
+
+        return Response({'slots': [
+            {
+                'membership_id': str(m.id),
+                'slot_name': m.slot_name or m.user.full_name,
+                'role': m.role,
+                'rotation_position': m.rotation_position,
+                'is_current_beneficiary': m.is_current_beneficiary,
+                'joined_at': m.joined_at.isoformat(),
+            }
+            for m in memberships
+        ]})

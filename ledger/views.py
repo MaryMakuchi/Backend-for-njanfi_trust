@@ -46,18 +46,27 @@ class GroupLedgerView(generics.ListAPIView):
 
         group_id = self.kwargs['group_id']
 
-        is_member = GroupMembership.objects.filter(
+        membership = GroupMembership.objects.filter(
             group_id=group_id, user=self.request.user,
-        ).exists()
-        if not is_member:
+        ).first()
+        if not membership:
             raise PermissionDenied('You are not a member of this group.')
+
+        is_treasurer = membership.role in ('treasurer', 'president')
 
         qs = Transaction.objects.filter(group_id=group_id).select_related('group', 'user')
 
         category = self.request.query_params.get('category', 'all')
         if category and category != 'all':
+            if category == 'savings' and not is_treasurer:
+                raise PermissionDenied('Only the group treasurer can view savings transactions.')
             types = CATEGORY_TYPE_MAP.get(category)
             if types is not None:
                 qs = qs.filter(transaction_type__in=types)
+        else:
+            # For 'all' category, exclude savings transactions for non-treasurers
+            if not is_treasurer:
+                savings_types = CATEGORY_TYPE_MAP.get('savings', [])
+                qs = qs.exclude(transaction_type__in=savings_types)
 
         return qs.order_by('-created_at')

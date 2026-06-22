@@ -176,7 +176,10 @@ class NjangiGroup(models.Model):
 class GroupMembership(models.Model):
     ROLE_CHOICES = [
         ('president', 'President'),
+        ('vice_president', 'Vice President'),
         ('treasurer', 'Treasurer'),
+        ('secretary', 'Secretary'),
+        ('auditor', 'Auditor'),
         ('member', 'Member'),
     ]
 
@@ -187,13 +190,13 @@ class GroupMembership(models.Model):
         on_delete=models.CASCADE,
         related_name='group_memberships',
     )
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='member')
+    role = models.CharField(max_length=30, choices=ROLE_CHOICES, default='member')
+    slot_name = models.CharField(max_length=100, blank=True, default='')
     rotation_position = models.PositiveIntegerField(null=True, blank=True)
     is_current_beneficiary = models.BooleanField(default=False)
     joined_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ('group', 'user')
         ordering = ['rotation_position', 'joined_at']
 
     def __str__(self):
@@ -374,3 +377,76 @@ class MembershipRequest(models.Model):
 
     def __str__(self):
         return f'{self.user.full_name} -> {self.group.name} ({self.status})'
+
+
+BOARD_ROLE_CHOICES = [
+    ('president', 'President'),
+    ('vice_president', 'Vice President'),
+    ('treasurer', 'Treasurer'),
+    ('secretary', 'Secretary'),
+    ('auditor', 'Auditor'),
+]
+
+
+class BoardElection(models.Model):
+    STATUS_CHOICES = [
+        ('nominations', 'Nominations'),
+        ('voting', 'Voting'),
+        ('complete', 'Complete'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    group = models.ForeignKey(NjangiGroup, on_delete=models.CASCADE, related_name='elections')
+    initiated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+        related_name='initiated_elections',
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='nominations')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Election for {self.group.name} ({self.status})'
+
+
+class Nomination(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    election = models.ForeignKey(BoardElection, on_delete=models.CASCADE, related_name='nominations')
+    nominee = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='nominations',
+    )
+    role = models.CharField(max_length=30, choices=BOARD_ROLE_CHOICES)
+    nominated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='made_nominations',
+    )
+    nomination_count = models.IntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('election', 'nominee', 'role')
+        ordering = ['-nomination_count', 'created_at']
+
+    def __str__(self):
+        return f'{self.nominee.full_name} nominated for {self.role}'
+
+
+class ElectionVote(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    election = models.ForeignKey(BoardElection, on_delete=models.CASCADE, related_name='votes')
+    voter = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='election_votes',
+    )
+    nominee = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='votes_received',
+    )
+    role = models.CharField(max_length=30)
+    voted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('election', 'voter', 'role')
+        ordering = ['-voted_at']
+
+    def __str__(self):
+        return f'{self.voter.full_name} voted for {self.nominee.full_name} as {self.role}'

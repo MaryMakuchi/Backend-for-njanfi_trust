@@ -1,10 +1,13 @@
 from django.urls import path
 
 from groups.views import (
+    AdvanceElectionView,
     AssignPickingOrderView,
     CloseSavingsPeriodView,
     ContributeSocialFundView,
     DueDatesView,
+    ElectionDetailView,
+    ElectionVoteView,
     GroupDetailView,
     GroupListCreateView,
     GroupMessageListCreateView,
@@ -14,12 +17,16 @@ from groups.views import (
     GroupSearchView,
     JoinGroupView,
     MembershipRequestListView,
+    MyGroupSlotsView,
+    NominateView,
     PlayNjangiView,
     RespondMembershipRequestView,
     SavingsDepositView,
     SavingsWithdrawView,
     SocialFundListCreateView,
+    StartElectionView,
     StartSavingsPeriodView,
+    UserSearchView,
 )
 
 urlpatterns = [
@@ -27,6 +34,7 @@ urlpatterns = [
     path('groups/search/', GroupSearchView.as_view(), name='group-search'),
     path('groups/due-dates/', DueDatesView.as_view(), name='group-due-dates'),
     path('groups/join/', JoinGroupView.as_view(), name='group-join'),
+    path('groups/users/search/', UserSearchView.as_view(), name='user-search'),
     path('groups/<uuid:pk>/', GroupDetailView.as_view(), name='group-detail'),
     path('groups/<uuid:pk>/preview/', GroupPreviewView.as_view(), name='group-preview'),
     path('groups/<uuid:pk>/reconciliation/', GroupReconciliationView.as_view(), name='group-reconciliation'),
@@ -54,4 +62,10 @@ urlpatterns = [
         RespondMembershipRequestView.as_view(),
         name='group-membership-request-respond',
     ),
+    path('groups/<uuid:pk>/election/start/', StartElectionView.as_view(), name='election-start'),
+    path('groups/<uuid:pk>/election/', ElectionDetailView.as_view(), name='election-detail'),
+    path('groups/<uuid:pk>/election/nominate/', NominateView.as_view(), name='election-nominate'),
+    path('groups/<uuid:pk>/election/advance/', AdvanceElectionView.as_view(), name='election-advance'),
+    path('groups/<uuid:pk>/election/vote/', ElectionVoteView.as_view(), name='election-vote'),
+    path('groups/<uuid:pk>/my-slots/', MyGroupSlotsView.as_view(), name='group-my-slots'),
 ]

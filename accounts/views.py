@@ -168,6 +168,24 @@ class WalletWithdrawView(APIView):
         amount = serializer.validated_data['amount']
 
         user = request.user
+
+        # Block withdrawal if user has an active loan with remaining balance
+        try:
+            from loans.models import Loan
+            has_active_loan = Loan.objects.filter(
+                user=user, status='active', remaining_balance__gt=0,
+            ).exists()
+            if has_active_loan:
+                return Response(
+                    {
+                        'detail': 'You have an active loan. Withdrawals are blocked until your loan is fully repaid.',
+                        'loan_blocked': True,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        except Exception:
+            pass
+
         if amount > user.wallet_balance:
             return Response({'amount': ['Insufficient wallet balance.']}, status=status.HTTP_400_BAD_REQUEST)
 
