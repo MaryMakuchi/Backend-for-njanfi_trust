@@ -445,6 +445,16 @@ class PlayNjangiView(APIView):
         play_serializer.is_valid(raise_exception=True)
         source = play_serializer.validated_data.get('source', 'wallet')
 
+        linked_account_id = play_serializer.validated_data.get('linked_account_id')
+        source_label = _source_label(source)
+        if linked_account_id and source != 'wallet':
+            from accounts.models import LinkedAccount
+            try:
+                linked_account = LinkedAccount.objects.get(id=linked_account_id, user=request.user)
+                source_label = f'{_source_label(source)} ({linked_account.account_number})'
+            except LinkedAccount.DoesNotExist:
+                pass
+
         amount = group.contribution_amount
 
         if source == 'wallet':
@@ -458,7 +468,7 @@ class PlayNjangiView(APIView):
             title = f'Contribution - {group.name}'
         else:
             # momo/bank: external funds, do NOT debit wallet. Note source.
-            title = f'Contribution ({_source_label(source)}) - {group.name}'
+            title = f'Contribution ({source_label}) - {group.name}'
 
         contribution = Contribution.objects.create(
             group=group,

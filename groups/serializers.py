@@ -329,6 +329,7 @@ class SavingsDepositSerializer(serializers.Serializer):
 
 class PlayNjangiSerializer(serializers.Serializer):
     source = serializers.ChoiceField(choices=PAYMENT_SOURCE_CHOICES, default='wallet', required=False)
+    linked_account_id = serializers.UUIDField(required=False, allow_null=True)
 
 
 class MembershipRequestSerializer(serializers.ModelSerializer):

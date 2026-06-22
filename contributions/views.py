@@ -25,6 +25,16 @@ class PayContributionView(APIView):
         data = serializer.validated_data
         group = NjangiGroup.objects.get(id=data['group_id'])
 
+        payment_note = data['payment_method']
+        linked_account_id = data.get('linked_account_id')
+        if linked_account_id:
+            from accounts.models import LinkedAccount
+            try:
+                account = LinkedAccount.objects.get(id=linked_account_id, user=request.user)
+                payment_note = f"{data['payment_method']} ({account.account_number})"
+            except LinkedAccount.DoesNotExist:
+                pass
+
         contribution = Contribution.objects.create(
             group=group,
             user=request.user,
@@ -32,7 +42,7 @@ class PayContributionView(APIView):
             due_date=timezone.now().date(),
             status='completed',
             paid_date=timezone.now(),
-            payment_method=data['payment_method'],
+            payment_method=payment_note,
         )
         group.fund_balance += data['amount']
         group.cycle_progress = min(group.cycle_progress + 1, group.max_members)

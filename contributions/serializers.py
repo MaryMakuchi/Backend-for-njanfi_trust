@@ -20,6 +20,7 @@ class PayContributionSerializer(serializers.Serializer):
     group_id = serializers.UUIDField()
     amount = serializers.DecimalField(max_digits=12, decimal_places=2)
     payment_method = serializers.CharField(max_length=50)
+    linked_account_id = serializers.UUIDField(required=False, allow_null=True)
 
     def validate_group_id(self, value):
         user = self.context['request'].user
