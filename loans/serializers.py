@@ -8,16 +8,31 @@ from loans.models import Loan, LoanVote
 from loans.services import max_eligible_amount
 
 
+class LoanVoteDetailSerializer(serializers.ModelSerializer):
+    voter_name = serializers.CharField(source='voter.full_name', read_only=True)
+
+    class Meta:
+        model = LoanVote
+        fields = ['voter_name', 'decision', 'voted_at']
+
+
 class LoanSerializer(serializers.ModelSerializer):
     group_name = serializers.CharField(source='group.name', read_only=True, default=None)
     group_id = serializers.UUIDField(source='group.id', read_only=True, default=None)
+    total_repayable = serializers.SerializerMethodField()
+    votes = LoanVoteDetailSerializer(many=True, read_only=True)
+
+    def get_total_repayable(self, obj):
+        from decimal import Decimal
+        interest = obj.amount * (obj.interest_rate / Decimal('100'))
+        return str(obj.amount + interest)
 
     class Meta:
         model = Loan
         fields = [
             'id', 'amount', 'purpose', 'duration_months', 'status',
             'interest_rate', 'remaining_balance', 'due_date', 'group_id',
-            'group_name', 'approved_date',
+            'group_name', 'approved_date', 'total_repayable', 'votes',
         ]
 
 

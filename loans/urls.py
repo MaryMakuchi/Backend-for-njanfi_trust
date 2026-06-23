@@ -1,6 +1,7 @@
 from django.urls import path
 
 from loans.views import (
+    GroupLoanListView,
     LoanEligibilityView,
     LoanListView,
     LoanRepayView,
@@ -16,4 +17,5 @@ urlpatterns = [
     path('loans/pending-votes/', PendingLoanVotesView.as_view(), name='loan-pending-votes'),
     path('loans/<uuid:pk>/repay/', LoanRepayView.as_view(), name='loan-repay'),
     path('loans/<uuid:pk>/vote/', LoanVoteView.as_view(), name='loan-vote'),
+    path('groups/<uuid:group_id>/loans/', GroupLoanListView.as_view(), name='group-loans'),
 ]

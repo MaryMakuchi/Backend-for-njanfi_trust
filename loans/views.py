@@ -115,9 +115,11 @@ class LoanVoteView(APIView):
         majority = eligible_voters // 2 + 1
 
         if approve_count >= majority:
+            from decimal import Decimal
             loan.status = 'active'
             loan.approved_date = timezone.now().date()
-            loan.remaining_balance = loan.amount
+            interest = loan.amount * (loan.interest_rate / Decimal('100'))
+            loan.remaining_balance = loan.amount + interest
             loan.save(update_fields=['status', 'approved_date', 'remaining_balance'])
 
             loan.user.wallet_balance = loan.user.wallet_balance + loan.amount
@@ -202,6 +204,17 @@ class PendingLoanVotesView(APIView):
             })
 
         return Response({'results': results})
+
+
+class GroupLoanListView(generics.ListAPIView):
+    serializer_class = LoanSerializer
+
+    def get_queryset(self):
+        group_id = self.kwargs['group_id']
+        user = self.request.user
+        if not GroupMembership.objects.filter(group_id=group_id, user=user).exists():
+            return Loan.objects.none()
+        return Loan.objects.filter(group_id=group_id).select_related('group', 'user').prefetch_related('votes__voter')
 
 
 class LoanRepayView(APIView):

@@ -34,6 +34,11 @@ class Loan(models.Model):
     class Meta:
         ordering = ['-created_at']
 
+    def total_repayable(self):
+        """Return principal + simple interest."""
+        interest = self.amount * (self.interest_rate / Decimal('100'))
+        return self.amount + interest
+
     def __str__(self):
         return f'{self.user.full_name} - {self.amount} ({self.status})'
 
