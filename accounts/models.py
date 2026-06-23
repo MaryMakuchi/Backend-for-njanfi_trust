@@ -28,6 +28,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     full_name = models.CharField(max_length=150)
     profile_image = models.ImageField(upload_to='profiles/', blank=True, null=True)
     firebase_uid = models.CharField(max_length=128, blank=True, null=True, unique=True)
+    celo_address = models.CharField(max_length=42, blank=True, default='')
 
     mri_score = models.DecimalField(max_digits=4, decimal_places=1, default=0)
     mri_trend = models.DecimalField(max_digits=4, decimal_places=1, default=0)
@@ -44,6 +45,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     social_fund_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     wallet_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    savings_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
@@ -80,3 +82,62 @@ class User(AbstractBaseUser, PermissionsMixin):
         if any(float(s) > 0 for s in scores):
             self.mri_score = sum(float(s) for s in scores) / len(scores)
         self.save(update_fields=['mri_score'])
+
+
+class MriEvent(models.Model):
+    """Audit trail of MRI score changes (demerits, and future merits)."""
+
+    REASON_CHOICES = [
+        ('late_njangi', 'Late Njangi'),
+        ('missed_contribution', 'Missed Contribution'),
+        ('loan_default', 'Loan Default'),
+        ('membership_rejected', 'Membership Rejected'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        'accounts.User',
+        on_delete=models.CASCADE,
+        related_name='mri_events',
+    )
+    # Negative for demerits, positive for future merits. Stored as Decimal to
+    # match the 0-10 mri_score scale (e.g. -0.5).
+    delta = models.DecimalField(max_digits=4, decimal_places=1)
+    reason = models.CharField(max_length=40, choices=REASON_CHOICES)
+    description = models.TextField()
+    # Stable reference (e.g. contribution/loan id) used for idempotency so the
+    # same underlying condition is never penalised twice.
+    reference_id = models.CharField(max_length=64, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.user_id} {self.reason} {self.delta}'
+
+
+class LinkedAccount(models.Model):
+    ACCOUNT_TYPE_CHOICES = [
+        ('mobile_money', 'Mobile Money'),
+        ('bank', 'Bank Account'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        'accounts.User',
+        on_delete=models.CASCADE,
+        related_name='linked_accounts',
+    )
+    account_type = models.CharField(max_length=20, choices=ACCOUNT_TYPE_CHOICES)
+    provider = models.CharField(max_length=50)
+    account_number = models.CharField(max_length=30)
+    account_name = models.CharField(max_length=150)
+    is_default = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-is_default', '-created_at']
+
+    def __str__(self):
+        return f'{self.provider} - {self.account_number}'

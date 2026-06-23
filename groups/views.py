@@ -1,9 +1,53 @@
+from decimal import Decimal
+
+from dateutil.relativedelta import relativedelta
+from django.contrib.auth import get_user_model
+from django.db import models
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from groups.models import GroupMembership, NjangiGroup
-from groups.serializers import CreateGroupSerializer, GroupSerializer, JoinGroupSerializer
+from accounts.services import record_transaction
+from groups.models import (
+    BoardElection,
+    ElectionVote,
+    GroupMembership,
+    GroupMessage,
+    MembershipRequest,
+    NjangiGroup,
+    Nomination,
+    SavingsContribution,
+    SavingsPeriod,
+    SocialFund,
+    SocialFundContribution,
+    compute_interest,
+)
+from groups.serializers import (
+    AssignPickingOrderSerializer,
+    ContributeSocialFundSerializer,
+    CreateGroupSerializer,
+    CreateSocialFundSerializer,
+    GroupMessageSerializer,
+    GroupPreviewSerializer,
+    GroupSearchSerializer,
+    GroupSerializer,
+    JoinGroupSerializer,
+    MembershipRequestSerializer,
+    PlayNjangiSerializer,
+    RespondMembershipRequestSerializer,
+    SavingsDepositSerializer,
+    SavingsPeriodSerializer,
+    SocialFundSerializer,
+    StartSavingsPeriodSerializer,
+    UpdateGroupSettingsSerializer,
+)
+from notifications.models import Notification
+
+
+def _source_label(source):
+    """Human-readable label for a payment source used in transaction titles."""
+    return {'momo': 'MoMo', 'bank': 'Bank', 'wallet': 'Wallet'}.get(source, source.capitalize())
 
 
 class GroupListCreateView(generics.ListCreateAPIView):
@@ -17,17 +61,167 @@ class GroupListCreateView(generics.ListCreateAPIView):
             return CreateGroupSerializer
         return GroupSerializer
 
-    def perform_create(self, serializer):
-        serializer.save()
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        group = serializer.save()
+        return Response(
+            GroupSerializer(group, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
-class GroupDetailView(generics.RetrieveAPIView):
-    serializer_class = GroupSerializer
+class GroupSearchView(generics.ListAPIView):
+    """Lightweight group search by name, for users who are not yet members."""
+
+    serializer_class = GroupSearchSerializer
 
     def get_queryset(self):
-        return NjangiGroup.objects.filter(
-            memberships__user=self.request.user,
-        ).prefetch_related('memberships__user')
+        query = self.request.query_params.get('q', '').strip()
+        if not query:
+            return NjangiGroup.objects.none()
+        return NjangiGroup.objects.filter(name__icontains=query)
+
+
+class GroupDetailView(generics.RetrieveUpdateAPIView):
+    http_method_names = ['get', 'patch', 'head', 'options']
+
+    def get_queryset(self):
+        return NjangiGroup.objects.all().prefetch_related('memberships__user')
+
+    def get_serializer_class(self):
+        if self.request.method == 'PATCH':
+            return UpdateGroupSettingsSerializer
+        return GroupSerializer
+
+    def get_object(self):
+        group = super().get_object()
+        if not GroupMembership.objects.filter(group=group, user=self.request.user).exists():
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('You are not a member of this group.')
+        return group
+
+    def patch(self, request, *args, **kwargs):
+        group = self.get_object()
+        membership = GroupMembership.objects.filter(group=group, user=request.user).first()
+        if not membership or membership.role != 'president':
+            return Response(
+                {'detail': 'Only the group president can edit group settings.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = UpdateGroupSettingsSerializer(group, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(GroupSerializer(group, context={'request': request}).data)
+
+
+class GroupReconciliationView(APIView):
+    """Treasurer-liability reconciliation for a group.
+
+    Surfaces, for any member, how the current cycle's money adds up:
+    what *should* have been collected (expected) vs. what actually came in
+    (collected) vs. what was paid out — and which specific members are still
+    behind. This protects whoever holds the money: any gap is traced to named
+    late payers rather than landing on the treasurer as an unexplained shortfall.
+    """
+
+    def get(self, request, pk):
+        from rest_framework.exceptions import PermissionDenied
+
+        from ledger.models import Transaction
+
+        group = generics.get_object_or_404(
+            NjangiGroup.objects.prefetch_related('memberships__user'), pk=pk,
+        )
+        my_membership = group.memberships.filter(user=request.user).first()
+        if not my_membership:
+            raise PermissionDenied('You are not a member of this group.')
+
+        memberships = list(group.memberships.select_related('user'))
+        active_members = len(memberships)
+        contribution_amount = group.contribution_amount
+
+        # The current cycle starts right after the most recent payout. Before the
+        # first payout the cycle has run since the group began, so we count all
+        # contributions.
+        last_payout = (
+            group.transactions.filter(transaction_type='payout')
+            .order_by('-created_at')
+            .first()
+        )
+        cycle_start = last_payout.created_at if last_payout else None
+
+        cycle_contribs = group.transactions.filter(
+            transaction_type='contribution', status='completed',
+        )
+        if cycle_start is not None:
+            cycle_contribs = cycle_contribs.filter(created_at__gt=cycle_start)
+
+        paid_by_user = {}
+        for t in cycle_contribs:
+            paid_by_user[t.user_id] = paid_by_user.get(t.user_id, Decimal('0')) + t.amount
+
+        collected = sum(paid_by_user.values(), Decimal('0'))
+        expected = contribution_amount * active_members
+        outstanding = expected - collected
+        if collected > expected:
+            cycle_status = 'surplus'
+        elif outstanding <= 0:
+            cycle_status = 'on_track'
+        else:
+            cycle_status = 'shortfall'
+
+        members_payload = []
+        unpaid_payload = []
+        for m in memberships:
+            amount_paid = paid_by_user.get(m.user_id, Decimal('0'))
+            has_paid = amount_paid >= contribution_amount
+            entry = {
+                'user_id': str(m.user_id),
+                'name': m.user.full_name,
+                'role': m.role,
+                'has_paid': has_paid,
+                'amount_paid': str(amount_paid),
+            }
+            members_payload.append(entry)
+            if not has_paid:
+                unpaid_payload.append(entry)
+
+        # Lifetime totals across all cycles, for the running books.
+        def _sum(qs_type):
+            total = group.transactions.filter(
+                transaction_type=qs_type, status='completed',
+            ).aggregate(total=models.Sum('amount'))['total']
+            return total or Decimal('0')
+
+        total_collected = _sum('contribution')
+        total_paid_out = _sum('payout')
+        loans_out = _sum('loan_disbursement') - _sum('loan_repayment')
+
+        return Response({
+            'group_id': str(group.id),
+            'group_name': group.name,
+            'contribution_amount': str(contribution_amount),
+            'active_members': active_members,
+            'max_members': group.max_members,
+            'is_president': my_membership.role == 'president',
+            'cycle': {
+                'expected': str(expected),
+                'collected': str(collected),
+                'outstanding': str(max(outstanding, Decimal('0'))),
+                'paid_count': len(paid_by_user),
+                'status': cycle_status,
+            },
+            'lifetime': {
+                'total_collected': str(total_collected),
+                'total_paid_out': str(total_paid_out),
+                'loans_outstanding': str(loans_out),
+                'fund_balance': str(group.fund_balance),
+            },
+            'members': members_payload,
+            'unpaid_members': unpaid_payload,
+        })
 
 
 class JoinGroupView(APIView):
@@ -46,17 +240,1063 @@ class JoinGroupView(APIView):
             if not group:
                 return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
 
+        if MembershipRequest.objects.filter(group=group, user=request.user, status='pending').exists():
+            return Response(
+                {'detail': 'Your membership request is already pending.'}, status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if group.member_count >= group.max_members:
-            return Response({'detail': 'Group is full'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'This group is full.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if GroupMembership.objects.filter(group=group, user=request.user).exists():
-            return Response({'detail': 'Already a member'}, status=status.HTTP_400_BAD_REQUEST)
+        MembershipRequest.objects.create(group=group, user=request.user, status='pending')
 
-        position = group.member_count + 1
-        GroupMembership.objects.create(
+        president = GroupMembership.objects.filter(group=group, role='president').select_related('user').first()
+        if president:
+            Notification.objects.create(
+                user=president.user,
+                title=f'New membership request for {group.name}',
+                body=f'{request.user.full_name} has requested to join {group.name}.',
+                notification_type='membership_request',
+                target_type='group',
+                target_id=str(group.id),
+                target_view='members',
+            )
+
+        return Response(
+            {'detail': 'Membership request sent. Waiting for approval.'}, status=status.HTTP_201_CREATED,
+        )
+
+
+class AssignPickingOrderView(APIView):
+    def post(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = GroupMembership.objects.filter(group=group, user=request.user).first()
+        if not membership or membership.role != 'president':
+            return Response(
+                {'detail': 'Only the group president can assign the picking order.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if group.rotation_started:
+            return Response(
+                {'detail': 'Picking order cannot be changed once the rotation has started.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if group.member_count < 2:
+            return Response(
+                {'detail': 'At least two members are required before assigning the picking order.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = AssignPickingOrderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        mode = serializer.validated_data['mode']
+        memberships = list(group.memberships.select_related('user').all())
+        membership_by_user = {m.user_id: m for m in memberships}
+
+        from groups.picking import gating_violations, mri_weighted_order
+
+        if mode == 'mri_weighted':
+            # Server computes a reliability-weighted order; trusted members are
+            # favoured for the earliest (highest-risk) payout slots.
+            order = mri_weighted_order(memberships)
+        else:
+            order = serializer.validated_data['order']
+            member_user_ids = set(membership_by_user)
+            order_set = set(order)
+            if len(order) != len(order_set):
+                return Response(
+                    {'order': ['The order must not contain duplicate members.']},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not order_set.issubset(member_user_ids):
+                return Response(
+                    {'order': ['The order may only include current members of the group.']},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # MRI-gated early-payout protection: block clearly unreliable
+            # members from the early window when the group has enough trusted
+            # members to avoid it. Suggest the reliability-weighted mode instead.
+            violations = gating_violations(order, membership_by_user)
+            if violations:
+                names = ', '.join(violations)
+                return Response(
+                    {'order': [
+                        f'These members have a low reliability (MRI) score and cannot be '
+                        f'placed in the early payout positions: {names}. Move them to later '
+                        f'positions, or use the reliability-weighted picking mode.'
+                    ]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Assign positions for members included in the order.
+        for position, user_id in enumerate(order, start=1):
+            m = membership_by_user[user_id]
+            m.rotation_position = position
+            m.is_current_beneficiary = position == 1
+            m.save(update_fields=['rotation_position', 'is_current_beneficiary'])
+
+        # Any current members not included in the order are left out of the
+        # active rotation until the picking order is re-run.
+        for user_id, m in membership_by_user.items():
+            if user_id not in order_set:
+                m.rotation_position = None
+                m.is_current_beneficiary = False
+                m.save(update_fields=['rotation_position', 'is_current_beneficiary'])
+
+        # Re-running the picking order changes the rotation, so reset cycle
+        # progress and the accumulated fund balance for the new rotation.
+        group.picking_mode = mode
+        group.schedule_generated = True
+        group.cycle_progress = 0
+        group.fund_balance = 0
+        group.save(update_fields=['picking_mode', 'schedule_generated', 'cycle_progress', 'fund_balance'])
+
+        return Response(GroupSerializer(group, context={'request': request}).data)
+
+
+class SocialFundListCreateView(generics.ListCreateAPIView):
+    serializer_class = SocialFundSerializer
+
+    def get_queryset(self):
+        return SocialFund.objects.filter(
+            group_id=self.kwargs['pk'],
+            group__memberships__user=self.request.user,
+        ).prefetch_related('contributions')
+
+    def post(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = GroupMembership.objects.filter(group=group, user=request.user).first()
+        if not membership or membership.role != 'president':
+            return Response(
+                {'detail': 'Only the group president can create a social fund.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = CreateSocialFundSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        fund = SocialFund.objects.create(group=group, created_by=request.user, **serializer.validated_data)
+        return Response(SocialFundSerializer(fund).data, status=status.HTTP_201_CREATED)
+
+
+class ContributeSocialFundView(APIView):
+    def post(self, request, pk, fund_id):
+        fund = SocialFund.objects.filter(
+            id=fund_id, group_id=pk, group__memberships__user=request.user,
+        ).first()
+        if not fund:
+            return Response({'detail': 'Social fund not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = ContributeSocialFundSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        amount = serializer.validated_data['amount']
+
+        if amount > request.user.wallet_balance:
+            return Response({'amount': ['Insufficient wallet balance.']}, status=status.HTTP_400_BAD_REQUEST)
+
+        request.user.wallet_balance -= amount
+        request.user.save(update_fields=['wallet_balance'])
+
+        fund.balance += amount
+        fund.save(update_fields=['balance'])
+
+        SocialFundContribution.objects.create(social_fund=fund, user=request.user, amount=amount)
+        record_transaction(
+            request.user, f'Social Fund - {fund.group.name}', amount, 'social_fund', is_credit=False,
+        )
+
+        return Response(SocialFundSerializer(fund).data, status=status.HTTP_201_CREATED)
+
+
+class PlayNjangiView(APIView):
+    def post(self, request, pk):
+        from contributions.models import Contribution
+
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not group.schedule_generated:
+            return Response(
+                {'detail': 'Picking order has not been assigned yet.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        today = timezone.now().date()
+        already_played = Contribution.objects.filter(
+            group=group, user=request.user, status='completed', due_date=today,
+        ).exists()
+        if already_played:
+            return Response(
+                {'detail': 'You have already played for this cycle.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        play_serializer = PlayNjangiSerializer(data=request.data or {})
+        play_serializer.is_valid(raise_exception=True)
+        source = play_serializer.validated_data.get('source', 'wallet')
+
+        linked_account_id = play_serializer.validated_data.get('linked_account_id')
+        source_label = _source_label(source)
+        if linked_account_id and source != 'wallet':
+            from accounts.models import LinkedAccount
+            try:
+                linked_account = LinkedAccount.objects.get(id=linked_account_id, user=request.user)
+                source_label = f'{_source_label(source)} ({linked_account.account_number})'
+            except LinkedAccount.DoesNotExist:
+                pass
+
+        amount = group.contribution_amount
+
+        if source == 'wallet':
+            if amount > request.user.wallet_balance:
+                return Response(
+                    {'detail': 'Insufficient wallet balance.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            request.user.wallet_balance -= amount
+            request.user.save(update_fields=['wallet_balance'])
+            title = f'Contribution - {group.name}'
+        else:
+            # momo/bank: external funds, do NOT debit wallet. Note source.
+            title = f'Contribution ({source_label}) - {group.name}'
+
+        contribution = Contribution.objects.create(
             group=group,
             user=request.user,
-            role='member',
-            rotation_position=position,
+            amount=amount,
+            due_date=today,
+            status='pending',
         )
-        return Response(GroupSerializer(group).data, status=status.HTTP_201_CREATED)
+        contribution.mark_paid(payment_method=source)
+
+        record_transaction(
+            request.user, title, amount, 'contribution', is_credit=False, group=group,
+        )
+
+        # Playing on time fairly recomputes the member's MRI from history.
+        from accounts.mri import recompute_mri
+        recompute_mri(request.user)
+
+        group.refresh_from_db()
+
+        cycle_completed = False
+        payout_data = None
+
+        if group.cycle_progress >= group.max_members:
+            cycle_completed = True
+            current_membership = group.memberships.select_related('user').filter(
+                is_current_beneficiary=True,
+            ).first()
+
+            payout_amount = group.contribution_amount * group.max_members
+
+            if current_membership:
+                recipient = current_membership.user
+                recipient.wallet_balance += payout_amount
+                recipient.save(update_fields=['wallet_balance'])
+
+                payout_transaction = record_transaction(
+                    recipient, f'Payout - {group.name}', payout_amount, 'payout', is_credit=True, group=group,
+                )
+
+                memberships = list(group.memberships.order_by('rotation_position'))
+                current_position = current_membership.rotation_position
+                next_membership = None
+                if current_position is not None:
+                    candidates = [
+                        m for m in memberships
+                        if m.rotation_position is not None and m.rotation_position > current_position
+                    ]
+                    if candidates:
+                        next_membership = min(candidates, key=lambda m: m.rotation_position)
+                    else:
+                        positioned = [m for m in memberships if m.rotation_position is not None]
+                        if positioned:
+                            next_membership = min(positioned, key=lambda m: m.rotation_position)
+
+                current_membership.is_current_beneficiary = False
+                current_membership.save(update_fields=['is_current_beneficiary'])
+
+                if next_membership:
+                    next_membership.is_current_beneficiary = True
+                    next_membership.save(update_fields=['is_current_beneficiary'])
+
+                group.cycle_progress = 0
+                group.fund_balance = 0
+                group.rotation_started = True
+                group.save(update_fields=['cycle_progress', 'fund_balance', 'rotation_started'])
+
+                payout_data = {
+                    'amount': str(payout_amount),
+                    'recipient': {
+                        'id': str(recipient.id),
+                        'name': recipient.full_name,
+                    },
+                    'transaction_hash': payout_transaction.hash or None,
+                }
+
+                Notification.objects.create(
+                    user=recipient,
+                    title=f'You received the payout for {group.name}',
+                    body=f'You have received a payout of {payout_amount} from {group.name}.',
+                    notification_type='upcoming_payout',
+                    target_type='group',
+                    target_id=str(group.id),
+                )
+
+                if next_membership:
+                    other_members = group.memberships.exclude(
+                        user_id=recipient.id,
+                    ).select_related('user')
+                    notifications = [
+                        Notification(
+                            user=m.user,
+                            title=f'{group.name} cycle completed',
+                            body=(
+                                f'The current cycle for {group.name} has been completed and '
+                                f'{recipient.full_name} received the payout. '
+                                f'{next_membership.user.full_name} picks next.'
+                            ),
+                            notification_type='group_announcement',
+                            target_type='group',
+                            target_id=str(group.id),
+                        )
+                        for m in other_members
+                    ]
+                    if notifications:
+                        Notification.objects.bulk_create(notifications)
+
+        group.refresh_from_db()
+
+        new_current = group.memberships.select_related('user').filter(
+            is_current_beneficiary=True,
+        ).first()
+        current_picker_data = None
+        if new_current:
+            current_picker_data = {
+                'id': str(new_current.user_id),
+                'name': new_current.user.full_name,
+                'rotation_position': new_current.rotation_position,
+            }
+
+        return Response(
+            {
+                'amount': str(amount),
+                'group_fund_balance': str(group.fund_balance),
+                'cycle_progress': group.cycle_progress,
+                'max_members': group.max_members,
+                'current_picker': current_picker_data,
+                'cycle_completed': cycle_completed,
+                'payout': payout_data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class GroupMessageListCreateView(generics.ListCreateAPIView):
+    serializer_class = GroupMessageSerializer
+
+    def get_group(self):
+        return NjangiGroup.objects.filter(
+            id=self.kwargs['pk'], memberships__user=self.request.user,
+        ).first()
+
+    def get_queryset(self):
+        group = self.get_group()
+        if not group:
+            return GroupMessage.objects.none()
+        return GroupMessage.objects.filter(group=group).select_related('user')
+
+    def create(self, request, *args, **kwargs):
+        group = self.get_group()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = self.get_serializer(data=request.data, context={'request': request, 'group': group})
+        serializer.is_valid(raise_exception=True)
+        message = serializer.save()
+        return Response(GroupMessageSerializer(message).data, status=status.HTTP_201_CREATED)
+
+
+def _user_savings_summary(period, user):
+    contributions = SavingsContribution.objects.filter(period=period, user=user).order_by('created_at')
+    principal = sum((c.amount for c in contributions), Decimal('0'))
+    interest = sum((compute_interest(c, period) for c in contributions), Decimal('0'))
+    interest = interest.quantize(Decimal('0.01'))
+    total = (principal + interest).quantize(Decimal('0.01'))
+    return {
+        'principal': str(principal.quantize(Decimal('0.01'))),
+        'interest_accrued': str(interest),
+        'total': str(total),
+        'deposits': [
+            {'amount': str(c.amount), 'date': c.created_at.date().isoformat()}
+            for c in contributions
+        ],
+    }
+
+
+class StartSavingsPeriodView(APIView):
+    def post(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = GroupMembership.objects.filter(group=group, user=request.user).first()
+        if not membership or membership.role != 'president':
+            return Response(
+                {'detail': 'Only the group president can start a savings period.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        existing = SavingsPeriod.objects.filter(group=group).order_by('-created_at').first()
+        if existing and not existing.is_closed:
+            return Response(
+                {'detail': 'An active savings period already exists for this group.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = StartSavingsPeriodSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        period = SavingsPeriod.objects.create(
+            group=group,
+            started_by=request.user,
+            status='active',
+            **serializer.validated_data,
+        )
+
+        members = GroupMembership.objects.filter(group=group).select_related('user')
+        notifications = [
+            Notification(
+                user=m.user,
+                title=f'New savings period for {group.name}',
+                body=(
+                    f'A new savings period has started for {group.name}: '
+                    f'{period.interest_rate}% {period.interest_type} interest, '
+                    f'from {period.start_date} to {period.end_date}.'
+                ),
+                notification_type='group_announcement',
+                target_type='group',
+                target_id=str(group.id),
+            )
+            for m in members
+        ]
+        if notifications:
+            Notification.objects.bulk_create(notifications)
+
+        return Response(SavingsPeriodSerializer(period).data, status=status.HTTP_201_CREATED)
+
+
+class GroupSavingsView(APIView):
+    def get(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        period = SavingsPeriod.objects.filter(group=group).order_by('-created_at').first()
+        if not period:
+            return Response({'period': None, 'my_savings': None})
+
+        my_savings = _user_savings_summary(period, request.user)
+        return Response({
+            'period': SavingsPeriodSerializer(period).data,
+            'my_savings': my_savings,
+        })
+
+
+class SavingsDepositView(APIView):
+    def post(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        period = SavingsPeriod.objects.filter(group=group).order_by('-created_at').first()
+        if not period or period.is_closed:
+            return Response(
+                {'detail': 'There is no active savings period for this group.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = SavingsDepositSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        amount = serializer.validated_data['amount']
+        source = serializer.validated_data.get('source', 'wallet')
+
+        if source == 'wallet':
+            if amount > request.user.wallet_balance:
+                return Response({'detail': 'Insufficient wallet balance.'}, status=status.HTTP_400_BAD_REQUEST)
+            request.user.wallet_balance -= amount
+            request.user.save(update_fields=['wallet_balance'])
+            title = f'Savings deposit - {group.name}'
+        else:
+            # momo/bank: funds come from an external account; do NOT debit the
+            # wallet. Record the contribution and note the source in the title.
+            title = f'Savings deposit ({_source_label(source)}) - {group.name}'
+
+        SavingsContribution.objects.create(period=period, user=request.user, amount=amount)
+        record_transaction(
+            request.user,
+            title=title,
+            amount=amount,
+            transaction_type='savings_deposit',
+            is_credit=False,
+            group=group,
+        )
+
+        return Response(_user_savings_summary(period, request.user), status=status.HTTP_201_CREATED)
+
+
+class SavingsWithdrawView(APIView):
+    def post(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        period = SavingsPeriod.objects.filter(group=group).order_by('-created_at').first()
+        if not period or not period.is_closed:
+            return Response(
+                {'detail': 'Savings cannot be withdrawn until the savings period ends.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        contributions = SavingsContribution.objects.filter(period=period, user=request.user)
+        principal = sum((c.amount for c in contributions), Decimal('0'))
+        interest = sum((compute_interest(c, period) for c in contributions), Decimal('0'))
+        total = (principal + interest).quantize(Decimal('0.01'))
+
+        if total <= 0:
+            return Response({'detail': 'You have no savings to withdraw.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        request.user.wallet_balance += total
+        request.user.save(update_fields=['wallet_balance'])
+
+        record_transaction(
+            request.user,
+            title=f'Savings withdrawal - {group.name}',
+            amount=total,
+            transaction_type='savings_withdrawal',
+            is_credit=True,
+            group=group,
+        )
+
+        contributions.delete()
+
+        return Response({
+            'amount_withdrawn': str(total),
+            'new_wallet_balance': str(request.user.wallet_balance),
+        })
+
+
+class CloseSavingsPeriodView(APIView):
+    def post(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = GroupMembership.objects.filter(group=group, user=request.user).first()
+        if not membership or membership.role != 'president':
+            return Response(
+                {'detail': 'Only the group president can start a savings period.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        period = SavingsPeriod.objects.filter(group=group, status='active').order_by('-created_at').first()
+        if not period:
+            return Response(
+                {'detail': 'There is no active savings period for this group.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        period.status = 'closed'
+        period.save(update_fields=['status'])
+
+        members = GroupMembership.objects.filter(group=group).select_related('user')
+        notifications = [
+            Notification(
+                user=m.user,
+                title=f'Savings period closed for {group.name}',
+                body=(
+                    f'The savings period for {group.name} has been closed. '
+                    f'You can now withdraw your savings and accrued interest.'
+                ),
+                notification_type='group_announcement',
+                target_type='group',
+                target_id=str(group.id),
+            )
+            for m in members
+        ]
+        if notifications:
+            Notification.objects.bulk_create(notifications)
+
+        return Response(SavingsPeriodSerializer(period).data)
+
+
+class MembershipRequestListView(APIView):
+    def get(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = GroupMembership.objects.filter(group=group, user=request.user).first()
+        if not membership or membership.role != 'president':
+            return Response(
+                {'detail': 'Only the group president can view membership requests.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        requests = MembershipRequest.objects.filter(group=group, status='pending').select_related('user')
+        return Response(MembershipRequestSerializer(requests, many=True).data)
+
+
+class RespondMembershipRequestView(APIView):
+    def post(self, request, pk, req_id):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = GroupMembership.objects.filter(group=group, user=request.user).first()
+        if not membership or membership.role != 'president':
+            return Response(
+                {'detail': 'Only the group president can respond to membership requests.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        membership_request = MembershipRequest.objects.filter(
+            id=req_id, group=group, status='pending',
+        ).select_related('user').first()
+        if not membership_request:
+            return Response({'detail': 'Membership request not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = RespondMembershipRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        decision = serializer.validated_data['decision']
+
+        if decision == 'accept':
+            if group.member_count >= group.max_members:
+                return Response({'detail': 'This group is full.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            position = group.member_count + 1
+            display_name = membership_request.user.full_name
+            existing_slots = GroupMembership.objects.filter(group=group, user=membership_request.user).count()
+            slot_name = display_name if existing_slots == 0 else f'{display_name} - Slot {existing_slots + 1}'
+            GroupMembership.objects.create(
+                group=group,
+                user=membership_request.user,
+                role='member',
+                rotation_position=position,
+                slot_name=slot_name,
+            )
+            membership_request.status = 'accepted'
+            membership_request.decided_at = timezone.now()
+            membership_request.save(update_fields=['status', 'decided_at'])
+
+            Notification.objects.create(
+                user=membership_request.user,
+                title=f'Welcome to {group.name}!',
+                body=f'Your request to join {group.name} has been accepted. You are now a member.',
+                notification_type='group_announcement',
+                target_type='group',
+                target_id=str(group.id),
+            )
+            return Response({'status': 'accepted'})
+
+        membership_request.status = 'rejected'
+        membership_request.decided_at = timezone.now()
+        membership_request.save(update_fields=['status', 'decided_at'])
+
+        Notification.objects.create(
+            user=membership_request.user,
+            title=f'Membership request to {group.name} declined',
+            body=f'Your request to join {group.name} has been rejected.',
+            notification_type='group_announcement',
+            target_type='group',
+            target_id=str(group.id),
+        )
+        return Response({'status': 'rejected'})
+
+
+class GroupPreviewView(APIView):
+    """Safe public preview of a group for any authenticated user.
+
+    No membership required. Returns a non-sensitive subset (no invite code,
+    member list, fund balances, or ledger) so a user can decide whether to
+    request to join.
+    """
+
+    def get(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk).prefetch_related('memberships__user').first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(GroupPreviewSerializer(group, context={'request': request}).data)
+
+
+class DueDatesView(APIView):
+    """Aggregated upcoming due dates across everything the user owes.
+
+    Sources: njangi play schedules, active social funds, and active loans.
+    `horizon` in {3m, 6m, 12m, all} bounds how far ahead to look; recurring
+    njangi occurrences are generated up to that horizon (capped at 12 months).
+    """
+
+    def get(self, request):
+        from contributions.models import Contribution
+
+        try:
+            from loans.models import Loan
+        except Exception:
+            Loan = None
+
+        horizon = request.query_params.get('horizon', '3m')
+        months_map = {'3m': 3, '6m': 6, '12m': 12, 'all': 12}
+        months = months_map.get(horizon, 3)
+
+        now = timezone.now()
+        cutoff = now + relativedelta(months=months)
+
+        results = []
+
+        groups = NjangiGroup.objects.filter(
+            memberships__user=request.user,
+        ).distinct()
+
+        for group in groups:
+            first_due = group.next_play_due_datetime()
+            if not first_due:
+                continue
+            # Generate recurring occurrences up to the horizon.
+            occurrence = first_due
+            guard = 0
+            while occurrence and occurrence <= cutoff and guard < 60:
+                guard += 1
+                already_played = Contribution.objects.filter(
+                    group=group, user=request.user, status='completed',
+                    due_date=occurrence.date(),
+                ).exists()
+                if not already_played:
+                    results.append({
+                        'type': 'njangi',
+                        'label': f'Njangi - {group.name}',
+                        'group_id': str(group.id),
+                        'group_name': group.name,
+                        'amount': str(group.contribution_amount),
+                        'due_datetime': occurrence.isoformat(),
+                    })
+                # next occurrence strictly after this one
+                nxt = group.next_play_due_datetime(from_dt=occurrence)
+                if nxt and nxt <= occurrence:
+                    break
+                occurrence = nxt
+
+        # Social funds: active funds in the user's groups, end_date as soft due.
+        social_funds = SocialFund.objects.filter(
+            group__memberships__user=request.user, is_active=True,
+        ).select_related('group').distinct()
+        for fund in social_funds:
+            if not fund.end_date:
+                continue
+            due_dt = timezone.make_aware(
+                timezone.datetime.combine(fund.end_date, timezone.datetime.min.time()).replace(
+                    hour=23, minute=59,
+                ),
+                timezone.get_current_timezone(),
+            )
+            if due_dt < now or due_dt > cutoff:
+                continue
+            amount = None
+            if fund.target_amount is not None:
+                remaining = fund.target_amount - fund.balance
+                amount = str(remaining) if remaining > 0 else '0.00'
+            results.append({
+                'type': 'social_fund',
+                'label': f'Social Fund - {fund.group.name}',
+                'group_id': str(fund.group_id),
+                'group_name': fund.group.name,
+                'amount': amount,
+                'due_datetime': due_dt.isoformat(),
+            })
+
+        # Loan repayments: active loans with a due_date.
+        if Loan is not None:
+            loans = Loan.objects.filter(
+                user=request.user, status='active', due_date__isnull=False,
+            ).select_related('group')
+            for loan in loans:
+                due_dt = timezone.make_aware(
+                    timezone.datetime.combine(loan.due_date, timezone.datetime.min.time()).replace(
+                        hour=23, minute=59,
+                    ),
+                    timezone.get_current_timezone(),
+                )
+                if due_dt < now or due_dt > cutoff:
+                    continue
+                results.append({
+                    'type': 'loan_repayment',
+                    'label': f'Loan repayment - {loan.purpose}',
+                    'group_id': str(loan.group_id) if loan.group_id else None,
+                    'group_name': loan.group.name if loan.group_id else None,
+                    'amount': str(loan.remaining_balance),
+                    'due_datetime': due_dt.isoformat(),
+                })
+
+        results.sort(key=lambda r: r['due_datetime'])
+        return Response({'due_dates': results})
+
+
+class StartElectionView(APIView):
+    def post(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = GroupMembership.objects.filter(group=group, user=request.user).first()
+        if not membership or membership.role != 'president':
+            return Response(
+                {'detail': 'Only the group president can start an election.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        active = BoardElection.objects.filter(group=group).exclude(status='complete').first()
+        if active:
+            return Response(
+                {'detail': 'An election is already in progress.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        election = BoardElection.objects.create(group=group, initiated_by=request.user, status='nominations')
+        return Response({
+            'id': str(election.id),
+            'group_id': str(group.id),
+            'status': election.status,
+            'created_at': election.created_at.isoformat(),
+        }, status=status.HTTP_201_CREATED)
+
+
+class ElectionDetailView(APIView):
+    def get(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        election = BoardElection.objects.filter(group=group).exclude(status='complete').first()
+        if not election:
+            return Response({'election': None})
+
+        nominations = Nomination.objects.filter(election=election).select_related('nominee', 'nominated_by')
+        votes = ElectionVote.objects.filter(election=election, voter=request.user)
+        my_votes = {v.role: str(v.nominee_id) for v in votes}
+
+        nom_data = {}
+        for n in nominations:
+            role = n.role
+            if role not in nom_data:
+                nom_data[role] = []
+            nom_data[role].append({
+                'nominee_id': str(n.nominee_id),
+                'nominee_name': n.nominee.full_name,
+                'nomination_count': n.nomination_count,
+            })
+
+        return Response({
+            'id': str(election.id),
+            'status': election.status,
+            'created_at': election.created_at.isoformat(),
+            'nominations': nom_data,
+            'my_votes': my_votes,
+        })
+
+
+class NominateView(APIView):
+    def post(self, request, pk):
+        User = get_user_model()
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        election = BoardElection.objects.filter(group=group, status='nominations').first()
+        if not election:
+            return Response(
+                {'detail': 'No active nomination phase for this group.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        nominee_username = request.data.get('nominee_username')
+        role = request.data.get('role')
+
+        valid_roles = ['president', 'vice_president', 'treasurer', 'secretary', 'auditor']
+        if role not in valid_roles:
+            return Response(
+                {'detail': f'Invalid role. Choose from: {", ".join(valid_roles)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            nominee = User.objects.get(username=nominee_username)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not GroupMembership.objects.filter(group=group, user=nominee).exists():
+            return Response(
+                {'detail': 'Nominee is not a member of this group.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        nomination, created = Nomination.objects.get_or_create(
+            election=election, nominee=nominee, role=role,
+            defaults={'nominated_by': request.user, 'nomination_count': 1},
+        )
+        if not created:
+            nomination.nomination_count += 1
+            nomination.save(update_fields=['nomination_count'])
+
+        return Response({
+            'nominee_id': str(nominee.id),
+            'nominee_name': nominee.full_name,
+            'role': role,
+            'nomination_count': nomination.nomination_count,
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class AdvanceElectionView(APIView):
+    def post(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = GroupMembership.objects.filter(group=group, user=request.user).first()
+        if not membership or membership.role != 'president':
+            return Response(
+                {'detail': 'Only the group president can advance the election.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        election = BoardElection.objects.filter(group=group).exclude(status='complete').first()
+        if not election:
+            return Response({'detail': 'No active election found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if election.status == 'nominations':
+            election.status = 'voting'
+            election.save(update_fields=['status'])
+            return Response({'status': election.status})
+
+        if election.status == 'voting':
+            valid_roles = ['president', 'vice_president', 'treasurer', 'secretary', 'auditor']
+            role_winners = {}
+
+            for role in valid_roles:
+                vote_counts = {}
+                for vote in ElectionVote.objects.filter(election=election, role=role).select_related('nominee'):
+                    vid = vote.nominee_id
+                    vote_counts[vid] = vote_counts.get(vid, 0) + 1
+                if vote_counts:
+                    winner_id = max(vote_counts, key=lambda x: vote_counts[x])
+                    role_winners[role] = winner_id
+
+            # Reset all members to 'member' role
+            GroupMembership.objects.filter(group=group).update(role='member')
+
+            # Assign winners their roles
+            for role, winner_id in role_winners.items():
+                GroupMembership.objects.filter(group=group, user_id=winner_id).update(role=role)
+
+            election.status = 'complete'
+            election.save(update_fields=['status'])
+
+            return Response({
+                'status': election.status,
+                'winners': {r: str(uid) for r, uid in role_winners.items()},
+            })
+
+        return Response({'detail': 'Election is already complete.'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ElectionVoteView(APIView):
+    def post(self, request, pk):
+        User = get_user_model()
+        group = NjangiGroup.objects.filter(id=pk, memberships__user=request.user).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        election = BoardElection.objects.filter(group=group, status='voting').first()
+        if not election:
+            return Response(
+                {'detail': 'No active voting phase for this group.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        nominee_id = request.data.get('nominee_id')
+        role = request.data.get('role')
+
+        valid_roles = ['president', 'vice_president', 'treasurer', 'secretary', 'auditor']
+        if role not in valid_roles:
+            return Response({'detail': 'Invalid role.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            nominee = User.objects.get(id=nominee_id)
+        except (User.DoesNotExist, Exception):
+            return Response({'detail': 'Nominee not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not GroupMembership.objects.filter(group=group, user=nominee).exists():
+            return Response(
+                {'detail': 'Nominee is not a member of this group.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not Nomination.objects.filter(election=election, nominee=nominee, role=role).exists():
+            return Response(
+                {'detail': 'This person was not nominated for this role.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        vote, created = ElectionVote.objects.update_or_create(
+            election=election, voter=request.user, role=role,
+            defaults={'nominee': nominee},
+        )
+
+        return Response({
+            'nominee_id': str(nominee.id),
+            'role': role,
+            'voted_at': vote.voted_at.isoformat(),
+        }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class UserSearchView(APIView):
+    def get(self, request):
+        User = get_user_model()
+        q = request.query_params.get('q', '').strip()
+        if not q or len(q) < 2:
+            return Response({'results': []})
+        users = User.objects.filter(username__icontains=q)[:10]
+        return Response({'results': [
+            {'id': str(u.id), 'username': u.username, 'name': u.full_name}
+            for u in users
+        ]})
+
+
+class MyGroupSlotsView(APIView):
+    def get(self, request, pk):
+        group = NjangiGroup.objects.filter(id=pk).first()
+        if not group:
+            return Response({'detail': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        memberships = GroupMembership.objects.filter(group=group, user=request.user).select_related('user')
+        if not memberships.exists():
+            return Response({'detail': 'You are not a member of this group.'}, status=status.HTTP_403_FORBIDDEN)
+
+        return Response({'slots': [
+            {
+                'membership_id': str(m.id),
+                'slot_name': m.slot_name or m.user.full_name,
+                'role': m.role,
+                'rotation_position': m.rotation_position,
+                'is_current_beneficiary': m.is_current_beneficiary,
+                'joined_at': m.joined_at.isoformat(),
+            }
+            for m in memberships
+        ]})

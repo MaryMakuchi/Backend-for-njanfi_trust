@@ -13,6 +13,10 @@ class Transaction(models.Model):
         ('loan_disbursement', 'Loan Disbursement'),
         ('loan_repayment', 'Loan Repayment'),
         ('social_fund', 'Social Fund'),
+        ('wallet_topup', 'Wallet Top-up'),
+        ('wallet_withdrawal', 'Wallet Withdrawal'),
+        ('savings_deposit', 'Savings Deposit'),
+        ('savings_withdrawal', 'Savings Withdrawal'),
     ]
     STATUS_CHOICES = [
         ('pending', 'Pending'),

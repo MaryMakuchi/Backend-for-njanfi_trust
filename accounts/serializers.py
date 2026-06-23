@@ -1,7 +1,9 @@
+from decimal import Decimal
+
 from django.contrib.auth import authenticate
 from rest_framework import serializers
 
-from accounts.models import User
+from accounts.models import LinkedAccount, MriEvent, User
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -15,7 +17,8 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'full_name', 'email', 'phone', 'profile_image_url',
             'mri_score', 'is_kyc_verified', 'groups_count', 'years_active',
-            'global_rank', 'badge',
+            'global_rank', 'badge', 'wallet_balance', 'savings_balance',
+            'celo_address',
         ]
 
     def get_profile_image_url(self, obj):
@@ -107,7 +110,63 @@ class DashboardSerializer(serializers.Serializer):
     active_loans_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
     social_fund_balance = serializers.DecimalField(max_digits=14, decimal_places=2)
     current_payout = serializers.DecimalField(max_digits=14, decimal_places=2)
+    wallet_balance = serializers.DecimalField(max_digits=14, decimal_places=2)
+    savings_balance = serializers.DecimalField(max_digits=14, decimal_places=2)
+    total_balance = serializers.DecimalField(max_digits=14, decimal_places=2)
     mri_score = serializers.DecimalField(max_digits=4, decimal_places=1)
     mri_trend = serializers.DecimalField(max_digits=4, decimal_places=1)
     mri_breakdown = MriBreakdownSerializer()
     recent_activity = serializers.ListField()
+
+
+class MriEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MriEvent
+        fields = ['delta', 'reason', 'description', 'created_at']
+
+
+class LinkedAccountSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LinkedAccount
+        fields = ['id', 'account_type', 'provider', 'account_number', 'account_name', 'is_default']
+
+    def create(self, validated_data):
+        user = self.context['request'].user
+        if validated_data.get('is_default'):
+            LinkedAccount.objects.filter(user=user).update(is_default=False)
+        return LinkedAccount.objects.create(user=user, **validated_data)
+
+
+class AmountSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.01'))
+
+
+class WalletWithdrawSerializer(AmountSerializer):
+    linked_account_id = serializers.UUIDField()
+
+    def validate_linked_account_id(self, value):
+        user = self.context['request'].user
+        if not LinkedAccount.objects.filter(id=value, user=user).exists():
+            raise serializers.ValidationError('Linked account not found.')
+        return value
+
+
+class WalletTopUpSerializer(AmountSerializer):
+    linked_account_id = serializers.UUIDField(required=False, allow_null=True)
+
+    def validate_linked_account_id(self, value):
+        user = self.context['request'].user
+        if not LinkedAccount.objects.filter(id=value, user=user).exists():
+            raise serializers.ValidationError('Linked account not found.')
+        return value
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_current_password(self, value):
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError('Current password is incorrect.')
+        return value

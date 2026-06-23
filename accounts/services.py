@@ -1,6 +1,5 @@
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from accounts.models import User
 from accounts.serializers import UserSerializer
 
 
@@ -17,6 +16,24 @@ def user_response(user, request):
         'user': UserSerializer(user, context={'request': request}).data,
         'tokens': issue_tokens(user),
     }
+
+
+def record_transaction(user, title, amount, transaction_type, is_credit, group=None):
+    from blockchain.services import record_on_chain
+    from ledger.models import Transaction
+
+    transaction = Transaction.objects.create(
+        user=user,
+        group=group,
+        title=title,
+        amount=amount,
+        transaction_type=transaction_type,
+        status='completed',
+        is_credit=is_credit,
+    )
+    record_on_chain(transaction)
+    transaction.save(update_fields=['hash', 'status'])
+    return transaction
 
 
 def build_dashboard(user, request):
@@ -55,6 +72,12 @@ def build_dashboard(user, request):
         if current_membership else 0
     )
 
+    social_fund_balance = sum(
+        fund.balance
+        for m in memberships
+        for fund in m.group.social_funds.filter(is_active=True)
+    )
+
     recent = Transaction.objects.filter(user=user).order_by('-created_at')[:5]
     recent_activity = TransactionSerializer(recent, many=True).data
 
@@ -66,8 +89,11 @@ def build_dashboard(user, request):
         'pending_payments': pending_payments,
         'total_savings': total_savings,
         'active_loans_amount': active_loans_amount,
-        'social_fund_balance': user.social_fund_balance,
+        'social_fund_balance': social_fund_balance,
         'current_payout': current_payout,
+        'wallet_balance': user.wallet_balance,
+        'savings_balance': user.savings_balance,
+        'total_balance': user.wallet_balance + user.savings_balance,
         'mri_score': user.mri_score,
         'mri_trend': user.mri_trend,
         'mri_breakdown': {

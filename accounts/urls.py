@@ -1,16 +1,24 @@
 from django.urls import path
 
 from accounts.views import (
+    ChangePasswordView,
     DashboardView,
     ForgotPasswordView,
     JwtRefreshView,
+    LinkedAccountDeleteView,
+    LinkedAccountListCreateView,
     LoginView,
     LogoutView,
     MeView,
+    MriHistoryView,
     PhoneLoginView,
     RegisterView,
+    SavingsDepositView,
+    SavingsWithdrawView,
     VerifyEmailView,
     VerifyPhoneView,
+    WalletTopUpView,
+    WalletWithdrawView,
 )
 
 urlpatterns = [
@@ -21,7 +29,15 @@ urlpatterns = [
     path('auth/verify-email/', VerifyEmailView.as_view(), name='auth-verify-email'),
     path('auth/forgot-password/', ForgotPasswordView.as_view(), name='auth-forgot-password'),
     path('auth/logout/', LogoutView.as_view(), name='auth-logout'),
+    path('auth/change-password/', ChangePasswordView.as_view(), name='auth-change-password'),
     path('auth/me/', MeView.as_view(), name='auth-me'),
     path('auth/token/refresh/', JwtRefreshView.as_view(), name='token-refresh'),
     path('dashboard/', DashboardView.as_view(), name='dashboard'),
+    path('accounts/mri-history/', MriHistoryView.as_view(), name='mri-history'),
+    path('accounts/linked/', LinkedAccountListCreateView.as_view(), name='linked-account-list'),
+    path('accounts/linked/<uuid:pk>/', LinkedAccountDeleteView.as_view(), name='linked-account-delete'),
+    path('wallet/topup/', WalletTopUpView.as_view(), name='wallet-topup'),
+    path('wallet/withdraw/', WalletWithdrawView.as_view(), name='wallet-withdraw'),
+    path('savings/deposit/', SavingsDepositView.as_view(), name='savings-deposit'),
+    path('savings/withdraw/', SavingsWithdrawView.as_view(), name='savings-withdraw'),
 ]

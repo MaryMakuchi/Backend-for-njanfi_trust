@@ -6,3 +6,8 @@ __pycache__/
 media/
 staticfiles/
 .DS_Store
+
+# Firebase service-account credentials (never commit secrets)
+secrets/
+*-service-account.json
+firebase-service-account.json

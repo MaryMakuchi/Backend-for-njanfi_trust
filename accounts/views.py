@@ -3,18 +3,24 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenRefreshView
 
-from accounts.models import User
+from accounts.models import LinkedAccount, User
 from accounts.serializers import (
+    AmountSerializer,
+    ChangePasswordSerializer,
     DashboardSerializer,
     ForgotPasswordSerializer,
+    LinkedAccountSerializer,
     LoginSerializer,
+    MriEventSerializer,
     PhoneLoginSerializer,
     RegisterSerializer,
     UserSerializer,
     VerifyEmailSerializer,
     VerifyPhoneSerializer,
+    WalletTopUpSerializer,
+    WalletWithdrawSerializer,
 )
-from accounts.services import build_dashboard, user_response
+from accounts.services import build_dashboard, record_transaction, user_response
 
 
 class RegisterView(generics.CreateAPIView):
@@ -96,5 +102,128 @@ class DashboardView(APIView):
         return Response(serializer.data)
 
 
+class MriHistoryView(APIView):
+    def get(self, request):
+        user = request.user
+        events = user.mri_events.all()
+        return Response({
+            'mri_score': user.mri_score,
+            'events': MriEventSerializer(events, many=True).data,
+        })
+
+
 class JwtRefreshView(TokenRefreshView):
     permission_classes = [permissions.AllowAny]
+
+
+class ChangePasswordView(APIView):
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        request.user.set_password(serializer.validated_data['new_password'])
+        request.user.save(update_fields=['password'])
+        return Response({'detail': 'Password updated successfully'})
+
+
+class LinkedAccountListCreateView(generics.ListCreateAPIView):
+    serializer_class = LinkedAccountSerializer
+
+    def get_queryset(self):
+        return LinkedAccount.objects.filter(user=self.request.user)
+
+    def get_serializer_context(self):
+        return {'request': self.request}
+
+
+class LinkedAccountDeleteView(generics.DestroyAPIView):
+    serializer_class = LinkedAccountSerializer
+
+    def get_queryset(self):
+        return LinkedAccount.objects.filter(user=self.request.user)
+
+
+class WalletTopUpView(APIView):
+    def post(self, request):
+        serializer = WalletTopUpSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        amount = serializer.validated_data['amount']
+        linked_account_id = serializer.validated_data.get('linked_account_id')
+
+        user = request.user
+        title = 'Wallet Top-up'
+        if linked_account_id:
+            linked_account = LinkedAccount.objects.get(id=linked_account_id, user=user)
+            title = f'Wallet Top-up ({linked_account.provider} - {linked_account.account_number})'
+
+        user.wallet_balance += amount
+        user.save(update_fields=['wallet_balance'])
+        record_transaction(user, title, amount, 'wallet_topup', is_credit=True)
+        return Response({'wallet_balance': user.wallet_balance})
+
+
+class WalletWithdrawView(APIView):
+    def post(self, request):
+        serializer = WalletWithdrawSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        amount = serializer.validated_data['amount']
+
+        user = request.user
+
+        # Block withdrawal if user has an active loan with remaining balance
+        try:
+            from loans.models import Loan
+            has_active_loan = Loan.objects.filter(
+                user=user, status='active', remaining_balance__gt=0,
+            ).exists()
+            if has_active_loan:
+                return Response(
+                    {
+                        'detail': 'You have an active loan. Withdrawals are blocked until your loan is fully repaid.',
+                        'loan_blocked': True,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        except Exception:
+            pass
+
+        if amount > user.wallet_balance:
+            return Response({'amount': ['Insufficient wallet balance.']}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.wallet_balance -= amount
+        user.save(update_fields=['wallet_balance'])
+        record_transaction(user, 'Wallet Withdrawal', amount, 'wallet_withdrawal', is_credit=False)
+        return Response({'wallet_balance': user.wallet_balance})
+
+
+class SavingsDepositView(APIView):
+    def post(self, request):
+        serializer = AmountSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        amount = serializer.validated_data['amount']
+
+        user = request.user
+        if amount > user.wallet_balance:
+            return Response({'amount': ['Insufficient wallet balance.']}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.wallet_balance -= amount
+        user.savings_balance += amount
+        user.save(update_fields=['wallet_balance', 'savings_balance'])
+        record_transaction(user, 'Savings Deposit', amount, 'savings_deposit', is_credit=True)
+        return Response({'wallet_balance': user.wallet_balance, 'savings_balance': user.savings_balance})
+
+
+class SavingsWithdrawView(APIView):
+    def post(self, request):
+        serializer = AmountSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        amount = serializer.validated_data['amount']
+
+        user = request.user
+        if amount > user.savings_balance:
+            return Response({'amount': ['Insufficient savings balance.']}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.savings_balance -= amount
+        user.wallet_balance += amount
+        user.save(update_fields=['wallet_balance', 'savings_balance'])
+        record_transaction(user, 'Savings Withdrawal', amount, 'savings_withdrawal', is_credit=False)
+        return Response({'wallet_balance': user.wallet_balance, 'savings_balance': user.savings_balance})

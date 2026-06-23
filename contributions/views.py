@@ -1,9 +1,9 @@
-import hashlib
 from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from blockchain.services import record_on_chain
 from contributions.models import Contribution
 from contributions.serializers import ContributionSerializer, PayContributionSerializer
 from groups.models import NjangiGroup
@@ -25,6 +25,16 @@ class PayContributionView(APIView):
         data = serializer.validated_data
         group = NjangiGroup.objects.get(id=data['group_id'])
 
+        payment_note = data['payment_method']
+        linked_account_id = data.get('linked_account_id')
+        if linked_account_id:
+            from accounts.models import LinkedAccount
+            try:
+                account = LinkedAccount.objects.get(id=linked_account_id, user=request.user)
+                payment_note = f"{data['payment_method']} ({account.account_number})"
+            except LinkedAccount.DoesNotExist:
+                pass
+
         contribution = Contribution.objects.create(
             group=group,
             user=request.user,
@@ -32,29 +42,26 @@ class PayContributionView(APIView):
             due_date=timezone.now().date(),
             status='completed',
             paid_date=timezone.now(),
-            payment_method=data['payment_method'],
+            payment_method=payment_note,
         )
         group.fund_balance += data['amount']
         group.cycle_progress = min(group.cycle_progress + 1, group.max_members)
         group.save(update_fields=['fund_balance', 'cycle_progress'])
 
-        tx_hash = hashlib.sha256(
-            f'{contribution.id}{data["amount"]}{timezone.now().isoformat()}'.encode(),
-        ).hexdigest()
         transaction = Transaction.objects.create(
             user=request.user,
             group=group,
             title=f'Contribution - {group.name}',
             amount=data['amount'],
             transaction_type='contribution',
-            status='verified',
-            hash=tx_hash,
+            status='completed',
             is_credit=False,
         )
+        record_on_chain(transaction)
+        transaction.save(update_fields=['hash', 'status'])
 
-        user = request.user
-        user.mri_contribution_consistency = min(float(user.mri_contribution_consistency) + 0.2, 10)
-        user.mri_trend = 0.2
-        user.recalculate_mri()
+        # Recompute MRI fairly from history rather than a flat bump.
+        from accounts.mri import recompute_mri
+        recompute_mri(request.user)
 
         return Response(TransactionSerializer(transaction).data, status=status.HTTP_201_CREATED)

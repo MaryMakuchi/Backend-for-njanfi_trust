@@ -8,6 +8,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-njangi-dev-key-change-in-prod')
 DEBUG = config('DEBUG', default=True, cast=bool)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,10.0.2.2', cast=Csv())
+# In development, also allow connections from devices on the local network
+# (e.g. a physical phone reaching the dev server via the host's LAN IP).
+if DEBUG and ALLOWED_HOSTS != ['*']:
+    ALLOWED_HOSTS.append('*')
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -26,6 +30,8 @@ INSTALLED_APPS = [
     'loans',
     'ledger',
     'notifications',
+    'blockchain',
+    'payments',
 ]
 
 MIDDLEWARE = [
@@ -136,3 +142,36 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'Backend API for the Njangi Trust mobile application',
     'VERSION': '1.0.0',
 }
+
+# --- Celo blockchain integration ---
+# Disabled by default: transactions get a simulated SHA-256 hash until a
+# NjangiLedger contract has been deployed and funded (see
+# blockchain_contracts/README.md). Set BLOCKCHAIN_ENABLED=True and the
+# variables below once that's done.
+BLOCKCHAIN_ENABLED = config('BLOCKCHAIN_ENABLED', default=False, cast=bool)
+CELO_NETWORK = config('CELO_NETWORK', default='alfajores')
+CELO_RPC_URL = config('CELO_RPC_URL', default='https://alfajores-forno.celo-testnet.org')
+CELO_PRIVATE_KEY = config('CELO_PRIVATE_KEY', default='')
+CELO_LEDGER_CONTRACT_ADDRESS = config('CELO_LEDGER_CONTRACT_ADDRESS', default='')
+CELO_EXPLORER_BASE_URL = config(
+    'CELO_EXPLORER_BASE_URL',
+    default='https://alfajores.celoscan.io/tx/',
+)
+
+# --- MTN MoMo webhook ---
+# Shared secret the payment provider must send back in the
+# `X-Momo-Signature` header. Used while the real MTN MoMo Collections API
+# integration is stubbed out.
+MOMO_WEBHOOK_SECRET = config('MOMO_WEBHOOK_SECRET', default='dev-momo-secret')
+
+# --- Push notifications (Firebase Cloud Messaging) ---
+# Optional: when unset, push sending is a no-op and only in-app notifications
+# are created. To enable real device pushes, set FIREBASE_CREDENTIALS to the
+# path of your Firebase service-account JSON file (downloaded from the Firebase
+# console → Project Settings → Service Accounts → Generate new private key).
+# This uses the modern FCM HTTP v1 API.
+FIREBASE_CREDENTIALS = config('FIREBASE_CREDENTIALS', default='')
+
+# Legacy server key (deprecated by Firebase). Kept for backward compatibility
+# only; FIREBASE_CREDENTIALS above is the supported path.
+FCM_SERVER_KEY = config('FCM_SERVER_KEY', default='')
