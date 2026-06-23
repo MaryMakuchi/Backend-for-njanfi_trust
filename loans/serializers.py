@@ -115,7 +115,7 @@ class RepayLoanSerializer(serializers.Serializer):
         return attrs
 
     def save(self, **kwargs):
-        from ledger.models import Transaction
+        from accounts.services import record_transaction
 
         loan = self.context['loan']
         user = self.context['request'].user
@@ -130,14 +130,13 @@ class RepayLoanSerializer(serializers.Serializer):
             loan.status = 'repaid'
         loan.save(update_fields=['remaining_balance', 'status'])
 
-        Transaction.objects.create(
+        record_transaction(
             user=user,
-            group=loan.group,
             title=f'Loan Repayment - {loan.group.name}' if loan.group else 'Loan Repayment',
             amount=amount,
             transaction_type='loan_repayment',
-            status='completed',
             is_credit=False,
+            group=loan.group,
         )
 
         return loan
