@@ -46,6 +46,7 @@ class NjangiGroup(models.Model):
     fund_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     cycle_progress = models.PositiveIntegerField(default=0)
     target_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    late_payment_penalty = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     duration_months = models.PositiveIntegerField(default=12)
     picking_mode = models.CharField(max_length=20, choices=PICKING_MODE_CHOICES, default='random')
     schedule_generated = models.BooleanField(default=False)

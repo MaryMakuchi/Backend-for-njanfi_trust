@@ -75,7 +75,7 @@ class GroupSerializer(serializers.ModelSerializer):
             'frequency', 'fund_balance', 'cycle_progress', 'average_mri',
             'start_date', 'end_date', 'invitation_code', 'rules', 'members',
             'current_beneficiary_id', 'next_beneficiary_id', 'current_picker',
-            'target_amount', 'duration_months', 'picking_mode',
+            'target_amount', 'late_payment_penalty', 'duration_months', 'picking_mode',
             'schedule_generated', 'pickers_per_cycle', 'rotation_started',
             'play_frequency', 'play_weekday', 'play_week_of_month',
             'play_deadline_time', 'next_play_due',
@@ -137,7 +137,7 @@ class CreateGroupSerializer(serializers.ModelSerializer):
         model = NjangiGroup
         fields = [
             'name', 'contribution_amount', 'frequency', 'max_members',
-            'start_date', 'rules', 'target_amount', 'duration_months', 'picking_mode',
+            'start_date', 'rules', 'target_amount', 'late_payment_penalty', 'duration_months', 'picking_mode',
             'play_frequency', 'play_weekday', 'play_week_of_month', 'play_deadline_time',
         ]
         extra_kwargs = {
