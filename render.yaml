@@ -27,3 +27,13 @@ services:
         value: "3.12.7"
       - key: WEB_CONCURRENCY
         value: "4"
+      # Admin user for the Django admin panel (/admin/). Set the values in the
+      # Render dashboard (Environment); they are intentionally not committed.
+      - key: DJANGO_SUPERUSER_EMAIL
+        sync: false
+      - key: DJANGO_SUPERUSER_PASSWORD
+        sync: false
+      - key: DJANGO_SUPERUSER_PHONE
+        sync: false
+      - key: DJANGO_SUPERUSER_FULL_NAME
+        sync: false
