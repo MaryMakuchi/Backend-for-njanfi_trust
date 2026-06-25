@@ -1,0 +1,29 @@
+# Render Blueprint for the Njangi Trust API.
+# Docs: https://render.com/docs/blueprint-spec
+databases:
+  - name: njangi-trust-db
+    plan: free
+    databaseName: njangi_trust
+    user: njangi_trust
+
+services:
+  - type: web
+    name: njangi-trust-api
+    runtime: python
+    plan: free
+    branch: claude/eager-gauss-e5vow5
+    buildCommand: "./build.sh"
+    startCommand: "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT"
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: njangi-trust-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "False"
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: WEB_CONCURRENCY
+        value: "4"
