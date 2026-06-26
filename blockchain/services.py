@@ -93,7 +93,9 @@ class CeloService:
             self._connect()
             from web3 import Web3
 
-            reference_id = Web3.to_bytes(hexstr='0x' + uuid.UUID(str(transaction.id)).hex)
+            # The contract expects bytes32; a UUID is only 16 bytes, so right-pad
+            # to 32 bytes. (Older web3.py auto-padded; newer versions reject it.)
+            reference_id = uuid.UUID(str(transaction.id)).bytes.ljust(32, b'\x00')
             user_address = getattr(transaction.user, 'celo_address', '') or '0x' + '00' * 20
             tx_type = TX_TYPE_ENUM.get(transaction.transaction_type, 0)
             amount = int(transaction.amount * 100)  # store as smallest unit (cents)
