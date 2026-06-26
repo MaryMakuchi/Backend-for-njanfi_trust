@@ -127,6 +127,11 @@ def record_on_chain(transaction):
     """
     tx_hash = CeloService.instance().record_transaction(transaction)
     if tx_hash:
+        # web3.py's `.hex()` may return the hash without a leading '0x' and
+        # at 64 chars; normalise to the canonical 0x-prefixed 66-char form so
+        # the API's on_chain check (0x prefix + length 66) recognises it.
+        if not tx_hash.startswith('0x'):
+            tx_hash = '0x' + tx_hash
         transaction.status = 'verified'
         transaction.hash = tx_hash
     else:
