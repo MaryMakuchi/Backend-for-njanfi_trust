@@ -15,6 +15,7 @@ Optionally pass a transaction hash to look up its receipt:
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from web3 import Web3
@@ -61,12 +62,12 @@ def main():
     for i in range(total):
         entry = contract.functions.getEntry(i).call()
         reference_id, user, amount, tx_type, timestamp = entry
+        dt = datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime('%d %b %Y %H:%M:%S UTC')
         print(f'  Entry #{i}')
-        print(f'    referenceId: 0x{reference_id.hex()}')
-        print(f'    user:        {user}')
-        print(f'    amount:      {amount / 100:.2f} (CFA)')
         print(f'    type:        {TX_TYPE_NAMES[tx_type]}')
-        print(f'    timestamp:   {timestamp}')
+        print(f'    amount:      {amount / 100:,.0f} CFA')
+        print(f'    recorded at: {dt}')
+        print(f'    tx hash:     0x{reference_id.hex()[:16]}...')
         print()
 
 
