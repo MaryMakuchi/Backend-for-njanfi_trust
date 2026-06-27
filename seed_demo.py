@@ -19,7 +19,7 @@ PASSWORD = 'Njangi2026!'
 # (full_name, email, phone, role)
 MEMBERS = [
     ('Eustace Nfah',    'eustace.nfah@demo.com',   '+237650000001', 'president'),
-    ('Delphine Nfah',   'delphine.nfah@demo.com',  '+237650000002', 'member'),
+    ('Delphine Nfah',   'delphine.nfah@demo.com',  '+237650000002', 'treasurer'),
     ('Thelma Balike',   'thelma.balike@demo.com',  '+237650000003', 'member'),
     ('Theresia Ngonda', 'theresia.ngonda@demo.com','+237650000004', 'member'),
     ('Ndeh Mark',       'ndeh.mark@demo.com',      '+237650000005', 'member'),
