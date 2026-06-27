@@ -24,8 +24,11 @@ MEMBERS = [
     ('Theresia Ngonda', 'theresia.ngonda@demo.com','+237650000004', 'member'),
     ('Ndeh Mark',       'ndeh.mark@demo.com',      '+237650000005', 'member'),
     ('Juliana Makuchi', 'juliana.makuchi@demo.com','+237650000006', 'member'),
-    ('Mary Makuchi',    'makuchinfah@gmail.com',   '+237650000007', 'member'),
 ]
+
+# The group seats 7; the 7th slot is left open so a new account can join
+# live with the invitation code during the demo.
+MAX_MEMBERS = 7
 
 users = {}
 for full_name, email, phone, role in MEMBERS:
@@ -50,7 +53,7 @@ group, gcreated = NjangiGroup.objects.get_or_create(
     defaults={
         'contribution_amount': 5000,
         'frequency': 'Monthly',
-        'max_members': len(MEMBERS),
+        'max_members': MAX_MEMBERS,
         'start_date': date(2026, 6, 28),
         'duration_months': 7,
         'picking_mode': 'mri_weighted',
@@ -62,7 +65,7 @@ group, gcreated = NjangiGroup.objects.get_or_create(
 # Monthly, first Sunday, 6 PM deadline. weekday: Mon=0 .. Sun=6
 group.contribution_amount = 5000
 group.frequency = 'Monthly'
-group.max_members = len(MEMBERS)
+group.max_members = MAX_MEMBERS
 group.start_date = date(2026, 6, 28)
 group.duration_months = 7
 group.picking_mode = 'mri_weighted'
