@@ -24,6 +24,7 @@ MEMBERS = [
     ('Theresia Ngonda', 'theresia.ngonda@demo.com','+237650000004', 'member'),
     ('Ndeh Mark',       'ndeh.mark@demo.com',      '+237650000005', 'member'),
     ('Juliana Makuchi', 'juliana.makuchi@demo.com','+237650000006', 'member'),
+    ('Mary Makuchi',    'makuchinfah@gmail.com',   '+237650000007', 'member'),
 ]
 
 users = {}
@@ -51,11 +52,11 @@ group, gcreated = NjangiGroup.objects.get_or_create(
         'frequency': 'Monthly',
         'max_members': len(MEMBERS),
         'start_date': date(2026, 6, 28),
-        'duration_months': 6,
+        'duration_months': 7,
         'picking_mode': 'mri_weighted',
         'created_by': president,
         'rules': 'Njangi sits the first Sunday of every month, deadline 6:00 PM. '
-                 'Starts 28 June 2026, final sitting first Sunday of December 2026.',
+                 'Starts 28 June 2026, final sitting first Sunday of January 2027.',
     },
 )
 # Monthly, first Sunday, 6 PM deadline. weekday: Mon=0 .. Sun=6
@@ -63,7 +64,7 @@ group.contribution_amount = 5000
 group.frequency = 'Monthly'
 group.max_members = len(MEMBERS)
 group.start_date = date(2026, 6, 28)
-group.duration_months = 6
+group.duration_months = 7
 group.picking_mode = 'mri_weighted'
 group.play_frequency = 'monthly'
 group.play_week_of_month = 'first'
